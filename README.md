@@ -13,7 +13,7 @@ Also, this is just a prototype to have further discussions on implementation ide
 3. There is an existing database server which restricts access by source IP in on-premise data center. New application deployed on k8s in a different cloud needs to access to the database server.
 
 ## How it works
-See https://github.com/kubernetes/enhancements/pull/1105#issuecomment-571694606 and https://github.com/kubernetes/enhancements/pull/1105#issuecomment-575424609 for basic ideas.
+See https://github.com/kubernetes/enhancements/pull/1105#issuecomment-571694606 and https://github.com/kubernetes/enhancements/pull/1105#issuecomment-575424609 for basic ideas. Scripts in this repo will automatically configure iptables rules and ssh tunnels by the [API](#API).
 For multi-cloud usecases, submariner should help achieve this goal, by connecting k8s clusters.
 
 ## Usage
@@ -104,7 +104,7 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
         # ssh-copy-id -i "${SSH_KEY_PATH}" "${GATEWAY_NODE_IP}" 
         ```
 
-    7. Review conf files under conf/ directory. Replace `targetIP` and `sourceIP` to fit to your environment. (`targetIP` should be external server's IP and `sourceIP` should be external IPs above.)
+    7. Review conf files under conf/ directory. Replace `targetIP` and `sourceIP` to fit to your environment. (`targetIP` should be external server's IP and `sourceIP` should be external IPs above. See [API](#API) for details.)
 
         ```console
         # cd ../controller
@@ -191,6 +191,40 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
 3. On external server
     1. Stop `python -m SimpleHTTPServer` process.
 
+## API
+API is subject to change after further discussions. However, current API is like below:
+
+```
+apiVersion: externalservice.example.com/v1alpha1
+kind: ExternalService
+metadata:
+  name: my-external-service1
+spec:
+  targetIP: 192.168.122.139
+  sources:
+    - service: 
+        namespace: ns1
+        name: my-service1
+      sourceIP: 192.168.122.200
+    - service: 
+        namespace: ns2
+        name: my-service2
+      sourceIP: 192.168.122.201
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+```
+
+This defines that:
+  - Access to `targetPort` of service named `metadata.name` will be forwarded to `port` of `targetIP` if sources are the pods associated with the `service`,
+  - The source IP of the packets from the pod associated with the `service` will be `sourceIP` defined for the `service`,
+  - Access from `targetIP` to `service`'s port of `sourceIP` will be forwarded to the `service`.
+
+In above case:
+  - Acccess to `my-external-service1:8000` will be forwarded to `192.168.122.139:8000` if sources are the pods associated with `my-service1` or `my-service2`, 
+  - The source IP of the packets from the pods associated with `my-service1` will be `192.168.122.200` and that with `my-service2` will be `192.168.122.201`,
+  - Access from `192.168.122.139` to `192.168.122.200:80` will be forwarded to `my-service1:80` and that to `192.168.122.201:80` will be forwarded to `my-service2:80` (if both `my-service1` and `my-service2` define port 80).
 
 ## Limitations
 - Only TCP is handled now and UDP is not handled. (Supporting UDP with ssh tunnel will be possible, technically.)
