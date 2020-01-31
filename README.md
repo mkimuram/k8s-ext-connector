@@ -56,7 +56,7 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
         ```
 
 3. On k8s server
-    0. Setup k8s cluster if not exists and create pods and services.
+    1. Setup k8s cluster if not exists and create pods and services.
 
         ```console
         # kind create cluster
@@ -71,32 +71,32 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
         # kubectl expose pod my-pod2 --name=my-service2 -n ns2 --port=80
         ```
 
-    1. Clone k8s-ext-connector repo.
+    2. Clone k8s-ext-connector repo.
 
         ```console
         # git clone https://github.com/mkimuram/k8s-ext-connector.git
         ```
 
-    2. Build forwarder image.
+    3. Build forwarder image.
 
         ```console
         # cd k8s-ext-connector/forwarder
         # docker build -t forwarder:0.1 .
         ```
 
-    3. Make forwarder image available on k8s cluster (For a cluster created with kind, do below.)
+    4. Make forwarder image available on k8s cluster (For a cluster created with kind, do below.)
 
         ```console
         # kind load docker-image forwarder:0.1
         ```
 
-    4. Define gateway server's IP address as a bash environment variable (Replace the IP with proper one). 
+    5. Define gateway server's IP address as a bash environment variable (Replace the IP with proper one). 
 
         ```console
         # export GATEWAY_NODE_IP="192.168.122.192"
         ```
 
-    5. Prepare ssh key to connect to gateway node. (Hit enter for all prompts in `ssh-keygen` and type "yes" and password for `ssh-copy-id`.)
+    6. Prepare ssh key to connect to gateway node. (Hit enter for all prompts in `ssh-keygen` and type "yes" and password for `ssh-copy-id`.)
 
         ```console
         # export SSH_KEY_PATH="/root/forwarder_ssh_key_rsa"
@@ -104,14 +104,14 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
         # ssh-copy-id -i "${SSH_KEY_PATH}" "${GATEWAY_NODE_IP}" 
         ```
 
-    6. Review conf files under conf/ directory. Replace `targetIP` and `sourceIP` to fit to your environment. (`targetIP` should be external server's IP and `sourceIP` should be external IPs above.)
+    7. Review conf files under conf/ directory. Replace `targetIP` and `sourceIP` to fit to your environment. (`targetIP` should be external server's IP and `sourceIP` should be external IPs above.)
 
         ```console
         # cd ../controller
         # vi conf/my-external-service1.yaml
         ```
 
-    7. Run controller.sh
+    8. Run controller.sh
 
         ```console
         # ./controller.sh conf
