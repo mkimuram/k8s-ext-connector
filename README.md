@@ -13,7 +13,13 @@ Also, this is just a prototype to have further discussions on implementation ide
 3. There is an existing database server which restricts access by source IP in on-premise data center. New application deployed on k8s in a different cloud needs to access to the database server.
 
 ## How it works
-See https://github.com/kubernetes/enhancements/pull/1105#issuecomment-571694606 and https://github.com/kubernetes/enhancements/pull/1105#issuecomment-575424609 for basic ideas. Scripts in this repo will automatically configure iptables rules and ssh tunnels by the [API](#API).
+See [connection from k8s to external server](https://github.com/kubernetes/enhancements/pull/1105#issuecomment-571694606) and [connection from external server to k8s](https://github.com/kubernetes/enhancements/pull/1105#issuecomment-575424609) for basic ideas. Scripts in this repo will automatically configure iptables rules and ssh tunnels ,which are explained in the URLs, by the [API](#API).
+
+There are mainly three scripts:
+- [forwarder.sh](forwarder/forwarder.sh): It runs inside forwarder pod, which is created per external server. It creates ssh tunnels and applys iptables rules for accessing to the external server,
+- [gateway.sh](gateway/gateway.sh): It runs on the gateway node. It creates network namespace and assign external IP to it, and run sshd per IP. Then, it applys iptables rules for accessing from the external server,
+- [controller.sh](controller/controller.sh): It creates and deletes forwarder pod and keep configurations for forwarder.sh and gateway.sh up-to-date.
+
 For multi-cloud usecases, submariner should help achieve this goal, by connecting k8s clusters.
 
 ## Usage
