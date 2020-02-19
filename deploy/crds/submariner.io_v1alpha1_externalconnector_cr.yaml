@@ -1,0 +1,7 @@
+apiVersion: submariner.io/v1alpha1
+kind: ExternalConnector
+metadata:
+  name: example-externalconnector
+spec:
+  # Add fields here
+  size: 3

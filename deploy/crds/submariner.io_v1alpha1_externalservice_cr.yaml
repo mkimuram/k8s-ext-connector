@@ -1,0 +1,7 @@
+apiVersion: submariner.io/v1alpha1
+kind: ExternalService
+metadata:
+  name: example-externalservice
+spec:
+  # Add fields here
+  size: 3
