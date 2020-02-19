@@ -19,7 +19,7 @@ spec:
           image: k8s-ext-connector:v0.0.1
           command:
           - k8s-ext-connector
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           env:
             - name: WATCH_NAMESPACE
               valueFrom:

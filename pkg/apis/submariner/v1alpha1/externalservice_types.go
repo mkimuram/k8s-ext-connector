@@ -1,17 +1,28 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 // ExternalServiceSpec defines the desired state of ExternalService
 type ExternalServiceSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
 	// Add custom validation using kubebuilder tags: https://book-v1.book.kubebuilder.io/beyond_basics/generating_crd.html
+	TargetIP string               `json:"targetIP"`
+	Sources  []Source             `json:"sources"`
+	Ports    []corev1.ServicePort `json:"ports"`
+}
+
+type Source struct {
+	Service  ServiceRef `json:"service"`
+	SourceIP string     `json:"sourceIP"`
+}
+
+type ServiceRef struct {
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name,omitempty"`
 }
 
 // ExternalServiceStatus defines the observed state of ExternalService

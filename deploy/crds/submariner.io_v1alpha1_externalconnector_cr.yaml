@@ -3,5 +3,5 @@ kind: ExternalConnector
 metadata:
   name: example-externalconnector
 spec:
-  # Add fields here
-  size: 3
+  namespace: external-services
+  version: v0.0.1
