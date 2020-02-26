@@ -2,8 +2,11 @@ package externalservice
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 
 	submarinerv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
+	"github.com/mkimuram/k8s-ext-connector/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -115,6 +118,16 @@ func (r *ReconcileExternalService) Reconcile(request reconcile.Request) (reconci
 	if err != nil && !errors.IsNotFound(err) {
 		return reconcile.Result{}, err
 	} else if err != nil {
+		// Ensure configmap exists before creating forwarder pod
+		configMap, err := util.GetOrCreateConfigMap(r.client, instance.Name, instance.Namespace)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+		// Set ExternalService instance as the owner and controller
+		if err := controllerutil.SetControllerReference(instance, configMap, r.scheme); err != nil {
+			return reconcile.Result{}, err
+		}
+
 		reqLogger.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
 		err = r.client.Create(context.TODO(), pod)
 		if err != nil {
@@ -141,6 +154,12 @@ func (r *ReconcileExternalService) Reconcile(request reconcile.Request) (reconci
 		if err != nil {
 			return reconcile.Result{}, err
 		}
+	}
+
+	// Update configmap
+	err = r.updateConfigmapDataForCR(instance)
+	if err != nil {
+		return reconcile.Result{}, err
 	}
 
 	return reconcile.Result{}, nil
@@ -171,7 +190,7 @@ func genForwardPodSpec(cr *submarinerv1alpha1.ExternalService) *corev1.Pod {
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "external-service-data",
+						Name: cr.Name,
 					},
 				},
 			},
@@ -244,4 +263,146 @@ func genForwardServiceSpec(cr *submarinerv1alpha1.ExternalService) *corev1.Servi
 			Selector: labels,
 		},
 	}
+}
+
+// updateConfigmapDataForCR updates configmap data for the CR
+func (r *ReconcileExternalService) updateConfigmapDataForCR(cr *submarinerv1alpha1.ExternalService) error {
+	// Get or create configmap to update
+	config, err := util.GetOrCreateConfigMap(r.client, cr.Name, cr.Namespace)
+	if err != nil {
+		return err
+	}
+
+	// Update data
+	usedPort := map[string]string{}
+	//usedRemotePort := map[string]string{}
+	data := r.genSSHTunnelRules(cr, usedPort)
+	//data += genRemoteSSHTunnelRules(cr, usedRemotePort)
+	data += r.genIptablesRules(cr, usedPort)
+	configmapData := map[string]string{"data.yaml": data}
+
+	// Update configmap with the data
+	if err := util.UpdateConfigmapData(r.client, config, configmapData); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *ReconcileExternalService) genSSHTunnelRules(cr *submarinerv1alpha1.ExternalService, usedPorts map[string]string) string {
+	rules := ""
+
+	for _, source := range cr.Spec.Sources {
+		for _, port := range cr.Spec.Ports {
+			fwdPort := genPort(source.SourceIP, port.TargetPort.String(), usedPorts)
+			// Skip generating rules if any of values are not available
+			if fwdPort == "" || cr.Spec.TargetIP == "" || port.TargetPort.String() == "" || source.SourceIP == "" {
+				continue
+			}
+			rules += fmt.Sprintf("%s:%s:%s,%s\n", fwdPort, cr.Spec.TargetIP, port.TargetPort.String(), source.SourceIP)
+		}
+	}
+
+	return rules
+}
+
+func (r *ReconcileExternalService) genRemoteSSHTunnelRules(cr *submarinerv1alpha1.ExternalService, usedRemotePorts map[string]string) string {
+	rules := ""
+
+	for _, source := range cr.Spec.Sources {
+		svc := &corev1.Service{}
+		err := r.client.Get(context.TODO(), types.NamespacedName{Name: source.Service.Name, Namespace: source.Service.Namespace}, svc)
+		if err != nil && !errors.IsNotFound(err) {
+			// TODO: Handle error properly
+			continue
+		}
+		clusterIP := svc.Spec.ClusterIP
+		for _, svcPort := range svc.Spec.Ports {
+			//remoteFwdPort := genRemotePort(source.SourceIP, clusterIP, svcPort.Port, usedRemotePorts)
+			// TODO: implement genRemotePort
+			remoteFwdPort := ""
+			// Skip generating rules if any of values are not available
+			if source.SourceIP == "" || remoteFwdPort == "" || clusterIP == "" || strconv.Itoa(int(svcPort.Port)) == "" {
+				continue
+			}
+			rules += fmt.Sprintf("%s:%s:%s:%s,%s\n", source.SourceIP, remoteFwdPort, clusterIP, strconv.Itoa(int(svcPort.Port)), source.SourceIP)
+		}
+	}
+
+	return rules
+}
+
+func (r *ReconcileExternalService) genIptablesRules(cr *submarinerv1alpha1.ExternalService, usedPorts map[string]string) string {
+	logger := log.WithValues("Namespace", cr.Namespace, "Name", cr.Name)
+	logger.Info("genIptablesRules")
+
+	rules := ""
+
+	// TODO: get fwdPodIP properly
+	fwdPod := &corev1.Pod{}
+	err := r.client.Get(context.TODO(), types.NamespacedName{Name: cr.Name, Namespace: cr.Namespace}, fwdPod)
+	if err != nil && !errors.IsNotFound(err) {
+		// TODO: Handle error properly
+		return ""
+	}
+	fwdPodIP := fwdPod.Status.PodIP
+	logger.Info("fwdPod", "fwdPodIP", fwdPodIP)
+
+	for _, source := range cr.Spec.Sources {
+		logger.Info("service", "name", source.Service.Name, "namespace", source.Service.Namespace)
+		endpoint := &corev1.Endpoints{}
+		err := r.client.Get(context.TODO(), types.NamespacedName{Name: source.Service.Name, Namespace: source.Service.Namespace}, endpoint)
+		if err != nil && !errors.IsNotFound(err) {
+			// TODO: Handle error properly
+			logger.Info("getEndpoint", "err", err)
+			continue
+		}
+		logger.Info("getEndpoint", "endpoint", endpoint)
+		for _, port := range cr.Spec.Ports {
+			fwdPort := getPort(source.SourceIP, port.TargetPort.String(), usedPorts)
+			logger.Info("port", "port", port.TargetPort.String(), "fwdPort", fwdPort)
+
+			for _, subset := range endpoint.Subsets {
+				for _, addr := range subset.Addresses {
+					logger.Info("Values:", "fwdPodIP", fwdPodIP, "IP", addr.IP, "TargetPort", port.TargetPort.String(), "fwdPort", fwdPort, "TargetIP", cr.Spec.TargetIP)
+					// Skip generating rules if any of values are not available
+					if fwdPodIP == "" || addr.IP == "" || port.TargetPort.String() == "" || fwdPort == "" || cr.Spec.TargetIP == "" {
+						continue
+					}
+					// TODO: Also handle UDP properly
+					rules += fmt.Sprintf("PREROUTING -t nat -m tcp -p tcp --dst %s --src %s --dport %s -j DNAT --to-destination %s:%s\n",
+						fwdPodIP, addr.IP, port.TargetPort.String(), fwdPodIP, fwdPort)
+					rules += fmt.Sprintf("POSTROUTING -t nat -m tcp -p tcp --dst %s --dport %s -j SNAT --to-source %s\n",
+						cr.Spec.TargetIP, fwdPort, fwdPodIP)
+				}
+			}
+		}
+	}
+
+	return rules
+}
+
+func genPort(sourceIP string, targetPort string, usedPorts map[string]string) string {
+	MINPORT := 2049
+	MAXPORT := 65536
+
+	for port := MINPORT; port < MAXPORT+1; port++ {
+		strPort := strconv.Itoa(port)
+		if _, ok := usedPorts[strPort]; !ok {
+			usedPorts[strPort] = sourceIP + ":" + targetPort
+			return strPort
+		}
+	}
+
+	return ""
+}
+
+func getPort(sourceIP string, targetPort string, usedPorts map[string]string) string {
+	for port, usedBy := range usedPorts {
+		if usedBy == sourceIP+":"+targetPort {
+			return port
+		}
+	}
+
+	return ""
 }
