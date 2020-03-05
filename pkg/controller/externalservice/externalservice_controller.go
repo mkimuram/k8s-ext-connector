@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/go-logr/logr"
 	submarinerv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
 	"github.com/mkimuram/k8s-ext-connector/pkg/util"
 	corev1 "k8s.io/api/core/v1"
@@ -32,6 +33,12 @@ const (
 	ExternalServiceNamespaceLabel = "externalservice.submariner.io/namespace"
 	// ExternalServiceNameLabel is the label for name of external service
 	ExternalServiceNameLabel = "externalservice.submariner.io/name"
+	// ExternalServiceFinalizerName is the name of finalizer for external service
+	ExternalServiceFinalizerName = "finalizer.externalservice.submariner.io"
+	// MinPort is the smallest port number that can be used by forwarder pod
+	MinPort = 2049
+	// MaxPort is the biggest port number that can be used by forwarder pod
+	MaxPort = 65536
 )
 
 // Add creates a new ExternalService Controller and adds it to the Manager. The Manager will set fields on the Controller
@@ -190,6 +197,27 @@ func (r *ReconcileExternalService) Reconcile(request reconcile.Request) (reconci
 			return reconcile.Result{}, nil
 		}
 		// Error reading the object - requeue the request.
+		return reconcile.Result{}, err
+	}
+
+	// ExternalService CR is deleted, so clean up the related resources, then clear finalizer
+	if instance.GetDeletionTimestamp() != nil {
+		// Clean up related resources
+		if err := r.deleteResourceForExternalService(instance); err != nil {
+			return reconcile.Result{}, err
+		}
+
+		// Clear finalizer
+		instance.SetFinalizers(nil)
+		if err := r.client.Update(context.TODO(), instance); err != nil {
+			return reconcile.Result{}, err
+		}
+
+		return reconcile.Result{}, nil
+	}
+
+	// Add finalizer for this CR
+	if err := r.addFinalizer(reqLogger, instance); err != nil {
 		return reconcile.Result{}, err
 	}
 
@@ -472,10 +500,8 @@ func (r *ReconcileExternalService) genIptablesRules(cr *submarinerv1alpha1.Exter
 }
 
 func genPort(sourceIP string, targetPort string, usedPorts map[string]string) string {
-	MINPORT := 2049
-	MAXPORT := 65536
 
-	for port := MINPORT; port < MAXPORT+1; port++ {
+	for port := MinPort; port < MaxPort+1; port++ {
 		strPort := strconv.Itoa(port)
 		if _, ok := usedPorts[strPort]; !ok {
 			usedPorts[strPort] = sourceIP + ":" + targetPort
@@ -494,4 +520,51 @@ func getPort(sourceIP string, targetPort string, usedPorts map[string]string) st
 	}
 
 	return ""
+}
+
+func (r *ReconcileExternalService) addFinalizer(reqLogger logr.Logger, cr *submarinerv1alpha1.ExternalService) error {
+	if len(cr.GetFinalizers()) < 1 && cr.GetDeletionTimestamp() == nil {
+		reqLogger.Info("Adding Finalizer to ExternalService")
+
+		cr.SetFinalizers([]string{ExternalServiceFinalizerName})
+		// Update CR
+		if err := r.client.Update(context.TODO(), cr); err != nil {
+			reqLogger.Error(err, "Failed to update ExternalService with finalizer")
+			return err
+		}
+
+	}
+	return nil
+}
+
+// deleteResourceForExternalService deletes all related resource for the external service
+func (r *ReconcileExternalService) deleteResourceForExternalService(cr *submarinerv1alpha1.ExternalService) error {
+	// Delete pod
+	pod := &corev1.Pod{}
+	if err := r.client.Get(context.TODO(), types.NamespacedName{Name: cr.Name, Namespace: ConnectorNamespace}, pod); err != nil && !errors.IsNotFound(err) {
+		return err
+	} else if err == nil {
+		// Pod exists, so delete it
+		_ = r.client.Delete(context.Background(), pod)
+	}
+
+	// Delete service
+	svc := &corev1.Service{}
+	if err := r.client.Get(context.TODO(), types.NamespacedName{Name: cr.Name, Namespace: ConnectorNamespace}, svc); err != nil && !errors.IsNotFound(err) {
+		return err
+	} else if err == nil {
+		// Service exists, so delete it
+		_ = r.client.Delete(context.Background(), svc)
+	}
+
+	// Delete configmap
+	configMap := &corev1.ConfigMap{}
+	if err := r.client.Get(context.TODO(), types.NamespacedName{Name: cr.Name, Namespace: ConnectorNamespace}, configMap); err != nil && !errors.IsNotFound(err) {
+		return err
+	} else if err == nil {
+		// Configmap exists, so delete it
+		_ = r.client.Delete(context.Background(), configMap)
+	}
+
+	return nil
 }
