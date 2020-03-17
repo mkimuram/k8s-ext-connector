@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -12,9 +13,12 @@ import (
 
 	"github.com/golang/glog"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -116,7 +120,64 @@ func (g *gateway) reconcile() {
 
 		time.Sleep(10 * time.Second)
 	}
-	// TODO: watch configmaps and apply changes if needed
+
+	// Watch configmaps and apply changes if needed
+	watchlist := cache.NewListWatchFromClient(
+		clientset.CoreV1().RESTClient(),
+		string(v1.ResourceConfigMaps),
+		g.configNamespace,
+		fields.Everything(),
+	)
+
+	_, controller := cache.NewInformer(
+		watchlist,
+		&v1.ConfigMap{},
+		0,
+		cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				g.handleChanges(obj)
+			},
+			DeleteFunc: func(obj interface{}) {
+				// TODO: handle deletion properly
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				g.handleChanges(newObj)
+			},
+		},
+	)
+	stop := make(chan struct{})
+	defer close(stop)
+	go controller.Run(stop)
+	for {
+		time.Sleep(time.Second)
+	}
+}
+
+func (g *gateway) handleChanges(obj interface{}) {
+	configMap, ok := obj.(*v1.ConfigMap)
+	if !ok {
+		// Not a configmap
+		glog.Infof("Not a configmap %v", obj)
+		return
+	}
+
+	// Handle configuration change for IPs
+	if configMap.Name == g.ipConfigName {
+		glog.Infof("Call applyAll to %q", configMap.Name)
+		g.applyAll()
+		// TODO: Handle error prorperly
+		return
+	}
+
+	// Handle configuration change for gateway
+	if strings.HasPrefix(configMap.Name, gatewayRulePrefix) {
+		ip, err := getIPfromRuleName(configMap.Name)
+		if err == nil {
+			glog.Infof("Call applyIptablesRules to %q %q", configMap.Name, ip)
+			// TODO: Handle error prorperly
+			g.applyIptablesRules(ip)
+		}
+	}
 }
 
 func (g *gateway) applyAll() error {
@@ -345,6 +406,7 @@ func (g *gateway) ensureSshdRunning(ns, ip string) error {
 }
 
 func (g *gateway) applyIptablesRules(ip string) error {
+	glog.Infof("Applying iptables rules for %q\n", ip)
 	ns, err := getNs(ip)
 	if err != nil {
 		return err
@@ -452,4 +514,20 @@ func getRuleName(ip string) (string, error) {
 	}
 
 	return gatewayRulePrefix + hexIP, nil
+}
+
+func getDecIPFromHexIP(hexIP string) (string, error) {
+	a, err := hex.DecodeString(hexIP)
+	if err != nil {
+		return "", err
+	}
+	if len(a) != 4 {
+		return "", fmt.Errorf("%s isn't a valid IP", hexIP)
+	}
+
+	return fmt.Sprintf("%v.%v.%v.%v", a[0], a[1], a[2], a[3]), nil
+}
+
+func getIPfromRuleName(ruleName string) (string, error) {
+	return getDecIPFromHexIP(strings.TrimPrefix(ruleName, gatewayRulePrefix))
 }
