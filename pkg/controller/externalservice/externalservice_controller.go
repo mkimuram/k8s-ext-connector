@@ -3,7 +3,9 @@ package externalservice
 import (
 	"context"
 	"fmt"
+	"net"
 	"strconv"
+	"strings"
 
 	"github.com/go-logr/logr"
 	submarinerv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
@@ -259,8 +261,14 @@ func (r *ReconcileExternalService) Reconcile(request reconcile.Request) (reconci
 		}
 	}
 
-	// Update configmap
+	// Update configmap for forwarder pod
 	err = r.updateConfigmapDataForCR(instance)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	// Update configmap for gateways
+	err = r.updateConfigmapDataForGateways(instance)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
@@ -379,9 +387,7 @@ func (r *ReconcileExternalService) updateConfigmapDataForCR(cr *submarinerv1alph
 	}
 
 	// Update data
-	usedPorts := map[string]string{}
-	//usedRemotePorts := map[string]string{}
-	data := r.genRules(cr, usedPorts)
+	data := r.genRules(cr)
 	configmapData := map[string]string{"data.yaml": data}
 
 	// Update configmap with the data
@@ -392,12 +398,130 @@ func (r *ReconcileExternalService) updateConfigmapDataForCR(cr *submarinerv1alph
 	return nil
 }
 
-func (r *ReconcileExternalService) genRules(cr *submarinerv1alpha1.ExternalService, usedPorts map[string]string) string {
+func (r *ReconcileExternalService) updateConfigmapDataForGateways(cr *submarinerv1alpha1.ExternalService) error {
+	// Get list of externalService
+	// TODO: Use selector to get only necessary external service inside the loop.
+	// Currently, only namespace and name is allowd for field selector (k/k#53459).
+	// So, we need to add labels and use label selector, instead.
+	list := &submarinerv1alpha1.ExternalServiceList{}
+	opts := []client.ListOption{}
+	if err := r.client.List(context.TODO(), list, opts...); err != nil {
+		return err
+	}
+
+	// Update all configmap of the gateway for sources
+	for _, source := range cr.Spec.Sources {
+		rules := ""
+
+		// Loop over all service in externalService's sources
+		for _, es := range list.Items {
+			for _, src := range es.Spec.Sources {
+				// Need to update configmap of the gateway for this sourceIP
+				if src.SourceIP == source.SourceIP {
+					targetIP := es.Spec.TargetIP
+					sourceIP := src.SourceIP
+					svc := &corev1.Service{}
+					err := r.client.Get(context.TODO(), types.NamespacedName{Name: src.Service.Name, Namespace: src.Service.Namespace}, svc)
+					if err != nil && !errors.IsNotFound(err) {
+						// TODO: Handle error properly
+						continue
+					}
+
+					clusterIP := svc.Spec.ClusterIP
+					esConfig := &corev1.ConfigMap{}
+					if err := r.client.Get(context.TODO(), types.NamespacedName{Name: es.Name, Namespace: ConnectorNamespace}, esConfig); err != nil && !errors.IsNotFound(err) {
+						// TODO: handle error properly
+						continue
+					}
+					for _, rport := range svc.Spec.Ports {
+						remotePort := strconv.Itoa(int(rport.Port))
+						remoteFwdPort, err := r.getRemoteFwdPort(esConfig, es.Name, clusterIP, sourceIP, remotePort)
+						if err != nil {
+							// TODO: handle error properly
+							continue
+						}
+						rules += fmt.Sprintf("PREROUTING -t nat -m tcp -p tcp --dst %s --src %s --dport %s -j DNAT --to-destination %s:%s\n",
+							sourceIP, targetIP, remotePort, sourceIP, remoteFwdPort)
+						rules += fmt.Sprintf("POSTROUTING -t nat -m tcp -p tcp --dst %s --dport %s -j SNAT --to-source %s\n",
+							targetIP, remoteFwdPort, sourceIP)
+					}
+				}
+			}
+		}
+
+		// TODO: move getRuleName to util to share with gateway.go
+		configMapName, err := getRuleName(source.SourceIP)
+		if err != nil {
+			// TODO: handle error properly
+			continue
+		}
+
+		configMap, err := util.GetOrCreateConfigMap(r.client, configMapName, ConnectorNamespace)
+		if err != nil {
+			// TODO: handle error properly
+			continue
+		}
+
+		// Update rules
+		configmapData := map[string]string{"rules": rules}
+
+		// Update configmap
+		if err := util.UpdateConfigmapData(r.client, configMap, configmapData); err != nil {
+			// TODO: handle error properly
+			continue
+		}
+	}
+
+	return nil
+}
+
+func (r *ReconcileExternalService) getRemoteFwdPort(esconfig *corev1.ConfigMap, esName, clusterIP, sourceIP, remotePort string) (string, error) {
+	var remoteRules string
+	var hasData bool
+
+	if data, ok := esconfig.Data["data.yaml"]; ok {
+		yamlData := make(map[string]map[string]map[string]string)
+		err := yaml.Unmarshal([]byte(data), yamlData)
+		if err != nil {
+			return "", err
+		}
+		if forwarder, ok := yamlData["forwarder"]; ok {
+			if rules, ok := forwarder[esName]; ok {
+				remoteRules, hasData = rules["remote-ssh-tunnel"]
+			}
+		}
+	}
+	if !hasData {
+		return "", fmt.Errorf("getRemoteFwdPort: configMap doesn't have data")
+	}
+	for _, s := range strings.Split(string(remoteRules), "\n") {
+		// Fields are like below:
+		// {sourceIP}:{remoteFwdPort}:{clusterIP}:{remotePort},{sourceIP}
+		// ex)
+		// 192.168.122.200:2049:10.96.223.183:80,192.168.122.200
+		commas := strings.Split(s, ",")
+		if len(commas) < 2 {
+			continue
+		}
+		cols := strings.Split(commas[0], ":")
+		if len(cols) < 4 {
+			continue
+		}
+		if cols[0] == sourceIP && cols[2] == clusterIP && cols[3] == remotePort {
+			return cols[1], nil
+		}
+	}
+
+	return "", fmt.Errorf("getRemoteFwdPort: remoteFwdPort not found")
+}
+
+func (r *ReconcileExternalService) genRules(cr *submarinerv1alpha1.ExternalService) string {
+	usedPorts := map[string]string{}
 	sshTunnelRules := r.genSSHTunnelRules(cr, usedPorts)
-	//remoteSSHRUles := r.genRemoteSSHTunnelRules(cr, usedRemotePort)
+	remoteSSHTunnelRules := r.genRemoteSSHTunnelRules(cr)
 	iptablesRules := r.genIptablesRules(cr, usedPorts)
 
-	data := map[string]map[string]map[string]string{"forwarder": {cr.Name: {"ssh-tunnel": sshTunnelRules, "iptables-rule": iptablesRules}}}
+	data := map[string]map[string]map[string]string{"forwarder": {cr.Name: {"ssh-tunnel": sshTunnelRules, "remote-ssh-tunnel": remoteSSHTunnelRules, "iptables-rule": iptablesRules}}}
 
 	byteData, err := yaml.Marshal(data)
 	if err != nil {
@@ -424,7 +548,7 @@ func (r *ReconcileExternalService) genSSHTunnelRules(cr *submarinerv1alpha1.Exte
 	return rules
 }
 
-func (r *ReconcileExternalService) genRemoteSSHTunnelRules(cr *submarinerv1alpha1.ExternalService, usedRemotePorts map[string]string) string {
+func (r *ReconcileExternalService) genRemoteSSHTunnelRules(cr *submarinerv1alpha1.ExternalService) string {
 	rules := ""
 
 	for _, source := range cr.Spec.Sources {
@@ -435,10 +559,15 @@ func (r *ReconcileExternalService) genRemoteSSHTunnelRules(cr *submarinerv1alpha
 			continue
 		}
 		clusterIP := svc.Spec.ClusterIP
+
+		usedRemotePorts, err := r.getUsedRemotePorts(source.SourceIP)
+		if err != nil {
+			// TODO: Handle error properly
+			continue
+		}
+
 		for _, svcPort := range svc.Spec.Ports {
-			//remoteFwdPort := genRemotePort(source.SourceIP, clusterIP, svcPort.Port, usedRemotePorts)
-			// TODO: implement genRemotePort
-			remoteFwdPort := ""
+			remoteFwdPort := genRemotePort(strconv.Itoa(int(svcPort.Port)), usedRemotePorts)
 			// Skip generating rules if any of values are not available
 			if source.SourceIP == "" || remoteFwdPort == "" || clusterIP == "" || strconv.Itoa(int(svcPort.Port)) == "" {
 				continue
@@ -448,6 +577,51 @@ func (r *ReconcileExternalService) genRemoteSSHTunnelRules(cr *submarinerv1alpha
 	}
 
 	return rules
+}
+
+func (r *ReconcileExternalService) getUsedRemotePorts(sourceIP string) (map[string]string, error) {
+	usedRemotePorts := map[string]string{}
+	// TODO: add prefix to configmapName
+	configmapName := sourceIP
+	configMap := &corev1.ConfigMap{}
+	if err := r.client.Get(context.TODO(), types.NamespacedName{Name: configmapName, Namespace: ConnectorNamespace}, configMap); err != nil && !errors.IsNotFound(err) {
+		return usedRemotePorts, err
+	}
+
+	if rules, ok := configMap.Data["iptables-rule"]; ok {
+		for _, s := range strings.Split(string(rules), "\n") {
+			fields := strings.Fields(s)
+			if len(fields) > 16 && fields[0] == "PREROUTING" {
+				ipPort := strings.Split(fields[16], ":")
+				if len(ipPort) > 1 {
+					// Reference for port to forward port
+					usedRemotePorts[fields[13]] = ipPort[1]
+					// Reference for forward port to port
+					usedRemotePorts[ipPort[1]] = fields[13]
+				}
+			}
+		}
+	}
+
+	return usedRemotePorts, nil
+}
+
+func genRemotePort(port string, usedRemotePorts map[string]string) string {
+	if val, ok := usedRemotePorts[port]; ok {
+		return val
+	}
+	for fwdPort := MinPort; fwdPort < MaxPort+1; fwdPort++ {
+		strFwdPort := strconv.Itoa(fwdPort)
+		if _, ok := usedRemotePorts[strFwdPort]; !ok {
+			// Reference for port to forward port
+			usedRemotePorts[port] = strFwdPort
+			// Reference for forward port to port
+			usedRemotePorts[strFwdPort] = port
+			return strFwdPort
+		}
+	}
+
+	return ""
 }
 
 func (r *ReconcileExternalService) genIptablesRules(cr *submarinerv1alpha1.ExternalService, usedPorts map[string]string) string {
@@ -567,4 +741,29 @@ func (r *ReconcileExternalService) deleteResourceForExternalService(cr *submarin
 	}
 
 	return nil
+}
+
+// TODO: move getHexIP and getRuleName to util
+func getHexIP(ip string) (string, error) {
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return "", fmt.Errorf("getHexIP: failed to parse ip %q", ip)
+	}
+	v4IP := parsedIP.To4()
+	if v4IP == nil {
+		return "", fmt.Errorf("getHexIP: failed to convert ip %v to 4 bytes", parsedIP)
+	}
+
+	return fmt.Sprintf("%02x%02x%02x%02x", v4IP[0], v4IP[1], v4IP[2], v4IP[3]), nil
+}
+
+const gatewayRulePrefix = "gwrule"
+
+func getRuleName(ip string) (string, error) {
+	hexIP, err := getHexIP(ip)
+	if err != nil {
+		return "", err
+	}
+
+	return gatewayRulePrefix + hexIP, nil
 }

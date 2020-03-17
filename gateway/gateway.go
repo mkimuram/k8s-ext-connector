@@ -368,7 +368,14 @@ func (g *gateway) applyIptablesRules(ip string) error {
 	// Apply all iptables rules
 	errStr := ""
 	for _, rule := range rules {
-		cmd := exec.Command("ip", "netns", "exec", ns, "iptables", "-A", rule)
+		args := []string{"netns", "exec", ns, "iptables", "-A"}
+		ruleStrs := strings.Fields(rule)
+		if len(ruleStrs) == 0 {
+			// Skip empty rule
+			continue
+		}
+		args = append(args, ruleStrs...)
+		cmd := exec.Command("ip", args...)
 		if err := cmd.Run(); err != nil {
 			// Append error and continue
 			errStr = errStr + fmt.Sprintf("failed to apply iptables rule %q: %v, ", rule, err)
