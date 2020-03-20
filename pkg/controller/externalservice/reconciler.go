@@ -112,7 +112,7 @@ func (r *ReconcileExternalService) Reconcile(request reconcile.Request) (reconci
 	}
 
 	// Update configmap for forwarder pod
-	err = r.updateConfigmapDataForCR(instance)
+	err = r.updateConfigmapDataForForwarder(instance)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
@@ -126,8 +126,8 @@ func (r *ReconcileExternalService) Reconcile(request reconcile.Request) (reconci
 	return reconcile.Result{}, nil
 }
 
-// updateConfigmapDataForCR updates configmap data for the CR
-func (r *ReconcileExternalService) updateConfigmapDataForCR(cr *submarinerv1alpha1.ExternalService) error {
+// updateConfigmapDataForForwarder updates configmap data for the CR
+func (r *ReconcileExternalService) updateConfigmapDataForForwarder(cr *submarinerv1alpha1.ExternalService) error {
 	// Get or create configmap to update
 	config, err := util.GetOrCreateConfigMap(r.client, cr.Name, ConnectorNamespace)
 	if err != nil {
@@ -135,7 +135,7 @@ func (r *ReconcileExternalService) updateConfigmapDataForCR(cr *submarinerv1alph
 	}
 
 	// Update data
-	data := r.genRules(cr)
+	data := r.genForwarderRules(cr)
 	configmapData := map[string]string{"data.yaml": data}
 
 	// Update configmap with the data
@@ -151,50 +151,18 @@ func (r *ReconcileExternalService) updateConfigmapDataForGateways(cr *submariner
 	// TODO: Use selector to get only necessary external service inside the loop.
 	// Currently, only namespace and name is allowd for field selector (k/k#53459).
 	// So, we need to add labels and use label selector, instead.
-	list := &submarinerv1alpha1.ExternalServiceList{}
+	eslist := &submarinerv1alpha1.ExternalServiceList{}
 	opts := []client.ListOption{}
-	if err := r.client.List(context.TODO(), list, opts...); err != nil {
+	if err := r.client.List(context.TODO(), eslist, opts...); err != nil {
 		return err
 	}
 
 	// Update all configmap of the gateway for sources
 	for _, source := range cr.Spec.Sources {
-		rules := ""
-
-		// Loop over all service in externalService's sources
-		for _, es := range list.Items {
-			for _, src := range es.Spec.Sources {
-				// Need to update configmap of the gateway for this sourceIP
-				if src.SourceIP == source.SourceIP {
-					targetIP := es.Spec.TargetIP
-					sourceIP := src.SourceIP
-					svc := &corev1.Service{}
-					err := r.client.Get(context.TODO(), types.NamespacedName{Name: src.Service.Name, Namespace: src.Service.Namespace}, svc)
-					if err != nil && !errors.IsNotFound(err) {
-						// TODO: Handle error properly
-						continue
-					}
-
-					clusterIP := svc.Spec.ClusterIP
-					esConfig := &corev1.ConfigMap{}
-					if err := r.client.Get(context.TODO(), types.NamespacedName{Name: es.Name, Namespace: ConnectorNamespace}, esConfig); err != nil && !errors.IsNotFound(err) {
-						// TODO: handle error properly
-						continue
-					}
-					for _, rport := range svc.Spec.Ports {
-						remotePort := strconv.Itoa(int(rport.Port))
-						remoteFwdPort, err := util.GetRemoteFwdPort(esConfig, es.Name, clusterIP, sourceIP, remotePort)
-						if err != nil {
-							// TODO: handle error properly
-							continue
-						}
-						rules += fmt.Sprintf("PREROUTING -t nat -m tcp -p tcp --dst %s --src %s --dport %s -j DNAT --to-destination %s:%s\n",
-							sourceIP, targetIP, remotePort, sourceIP, remoteFwdPort)
-						rules += fmt.Sprintf("POSTROUTING -t nat -m tcp -p tcp --dst %s --dport %s -j SNAT --to-source %s\n",
-							targetIP, remoteFwdPort, sourceIP)
-					}
-				}
-			}
+		rules, err := r.getGwRulesForSource(eslist, source)
+		if err != nil {
+			// TODO: handle error properly
+			continue
 		}
 
 		configMapName, err := util.GetRuleName(source.SourceIP)
@@ -222,7 +190,65 @@ func (r *ReconcileExternalService) updateConfigmapDataForGateways(cr *submariner
 	return nil
 }
 
-func (r *ReconcileExternalService) genRules(cr *submarinerv1alpha1.ExternalService) string {
+func (r *ReconcileExternalService) getGwRulesForSource(
+	eslist *submarinerv1alpha1.ExternalServiceList,
+	source submarinerv1alpha1.Source,
+) (string, error) {
+
+	rules := ""
+	// Loop over all service in externalService's sources
+	for _, es := range eslist.Items {
+		for _, src := range es.Spec.Sources {
+			// Update is only needed for the same sourceIP
+			if src.SourceIP != source.SourceIP {
+				continue
+			}
+			rs, err := r.getGwRule(src, es.Name, es.Spec.TargetIP)
+			if err != nil {
+				// TODO: handle error properly
+				continue
+			}
+			rules += rs
+		}
+	}
+	return rules, nil
+}
+
+func (r *ReconcileExternalService) getGwRule(src submarinerv1alpha1.Source, esName, targetIP string) (string, error) {
+	rules := ""
+
+	// Get service for src
+	svc := &corev1.Service{}
+	err := r.client.Get(context.TODO(), types.NamespacedName{Name: src.Service.Name, Namespace: src.Service.Namespace}, svc)
+	if err != nil && !errors.IsNotFound(err) {
+		// TODO: handle error properly
+		return "", fmt.Errorf("")
+	}
+
+	// Get configmap for esName
+	esConfig := &corev1.ConfigMap{}
+	if err := r.client.Get(context.TODO(), types.NamespacedName{Name: esName, Namespace: ConnectorNamespace}, esConfig); err != nil && !errors.IsNotFound(err) {
+		// TODO: handle error properly
+		return "", fmt.Errorf("")
+	}
+	for _, rport := range svc.Spec.Ports {
+		remotePort := strconv.Itoa(int(rport.Port))
+		// Find remoteFwdPort from esName which has combination of clusterIP, sourceIP, and remotePort
+		remoteFwdPort, err := util.GetRemoteFwdPort(esConfig, esName, svc.Spec.ClusterIP, src.SourceIP, remotePort)
+		if err != nil {
+			// TODO: handle error properly
+			continue
+		}
+		rules += fmt.Sprintf("PREROUTING -t nat -m tcp -p tcp --dst %s --src %s --dport %s -j DNAT --to-destination %s:%s\n",
+			src.SourceIP, targetIP, remotePort, src.SourceIP, remoteFwdPort)
+		rules += fmt.Sprintf("POSTROUTING -t nat -m tcp -p tcp --dst %s --dport %s -j SNAT --to-source %s\n",
+			targetIP, remoteFwdPort, src.SourceIP)
+	}
+
+	return rules, nil
+}
+
+func (r *ReconcileExternalService) genForwarderRules(cr *submarinerv1alpha1.ExternalService) string {
 	usedPorts := map[string]string{}
 	sshTunnelRules := r.genSSHTunnelRules(cr, usedPorts)
 	remoteSSHTunnelRules := r.genRemoteSSHTunnelRules(cr)
