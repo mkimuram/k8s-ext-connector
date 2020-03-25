@@ -223,42 +223,36 @@ func GenRemotePort(port string, usedRemotePorts map[string]string) string {
 // GetRemoteFwdPort returns string expression of port number that is defined used in configmap
 // Expected format of configmap is:
 //  data.yaml: |
-//    forwarder:
-//      my-externalservice:
-//        remote-ssh-tunnel: |
-//          192.168.122.200:2049:10.96.223.183:80,192.168.122.200
-//          192.168.122.201:2050:10.96.218.78:80,192.168.122.201
+//    remote-ssh-tunnel: |
+//      192.168.122.200:2049:10.96.223.183:80 192.168.122.200
+//      192.168.122.201:2050:10.96.218.78:80 192.168.122.201
 // For above example, it returns "2049", if clusterIP is "10.96.223.183",
 // sourceIP is "192.168.122.200", and remotePort is "80"
-func GetRemoteFwdPort(esconfig *corev1.ConfigMap, esName, clusterIP, sourceIP, remotePort string) (string, error) {
+func GetRemoteFwdPort(esconfig *corev1.ConfigMap, clusterIP, sourceIP, remotePort string) (string, error) {
 	var remoteRules string
 	var hasData bool
 
 	if data, ok := esconfig.Data["data.yaml"]; ok {
-		yamlData := make(map[string]map[string]map[string]string)
+		yamlData := make(map[string]string)
 		err := yaml.Unmarshal([]byte(data), yamlData)
 		if err != nil {
 			return "", err
 		}
-		if forwarder, ok := yamlData["forwarder"]; ok {
-			if rules, ok := forwarder[esName]; ok {
-				remoteRules, hasData = rules["remote-ssh-tunnel"]
-			}
-		}
+		remoteRules, hasData = yamlData["remote-ssh-tunnel"]
 	}
 	if !hasData {
 		return "", fmt.Errorf("getRemoteFwdPort: configMap doesn't have data")
 	}
 	for _, s := range strings.Split(string(remoteRules), "\n") {
 		// Fields are like below:
-		// {sourceIP}:{remoteFwdPort}:{clusterIP}:{remotePort},{sourceIP}
+		// {sourceIP}:{remoteFwdPort}:{clusterIP}:{remotePort} {sourceIP}
 		// ex)
-		// 192.168.122.200:2049:10.96.223.183:80,192.168.122.200
-		commas := strings.Split(s, ",")
-		if len(commas) < 2 {
+		// 192.168.122.200:2049:10.96.223.183:80 192.168.122.200
+		sps := strings.Fields(s)
+		if len(sps) < 2 {
 			continue
 		}
-		cols := strings.Split(commas[0], ":")
+		cols := strings.Split(sps[0], ":")
 		if len(cols) < 4 {
 			continue
 		}

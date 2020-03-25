@@ -15,17 +15,6 @@ func genForwardPodSpec(cr *submarinerv1alpha1.ExternalService) *corev1.Pod {
 	isPrivileged := true
 	var defaultMode int32 = 256
 
-	env := []corev1.EnvVar{
-		{
-			Name:  "EXTERNAL_SERVICE_NAME",
-			Value: cr.Name,
-		},
-		{
-			Name:  "DATA_FILE",
-			Value: "/etc/external-service/config/data.yaml",
-		},
-	}
-
 	volumes := []corev1.Volume{
 		{
 			Name: "data-file",
@@ -71,9 +60,8 @@ func genForwardPodSpec(cr *submarinerv1alpha1.ExternalService) *corev1.Pod {
 			Containers: []corev1.Container{
 				{
 					Name:            "forwarder",
-					Image:           "forwarder:0.1",
+					Image:           "forwarder:0.2",
 					SecurityContext: &corev1.SecurityContext{Privileged: &isPrivileged},
-					Env:             env,
 					VolumeMounts:    volumeMounts,
 				},
 			},

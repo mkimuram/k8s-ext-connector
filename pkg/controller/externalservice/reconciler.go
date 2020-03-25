@@ -233,8 +233,8 @@ func (r *ReconcileExternalService) getGwRule(src submarinerv1alpha1.Source, esNa
 	}
 	for _, rport := range svc.Spec.Ports {
 		remotePort := strconv.Itoa(int(rport.Port))
-		// Find remoteFwdPort from esName which has combination of clusterIP, sourceIP, and remotePort
-		remoteFwdPort, err := util.GetRemoteFwdPort(esConfig, esName, svc.Spec.ClusterIP, src.SourceIP, remotePort)
+		// Find remoteFwdPort from esConfig which has combination of clusterIP, sourceIP, and remotePort
+		remoteFwdPort, err := util.GetRemoteFwdPort(esConfig, svc.Spec.ClusterIP, src.SourceIP, remotePort)
 		if err != nil {
 			// TODO: handle error properly
 			continue
@@ -254,7 +254,7 @@ func (r *ReconcileExternalService) genForwarderRules(cr *submarinerv1alpha1.Exte
 	remoteSSHTunnelRules := r.genRemoteSSHTunnelRules(cr)
 	iptablesRules := r.genIptablesRules(cr, usedPorts)
 
-	data := map[string]map[string]map[string]string{"forwarder": {cr.Name: {"ssh-tunnel": sshTunnelRules, "remote-ssh-tunnel": remoteSSHTunnelRules, "iptables-rule": iptablesRules}}}
+	data := map[string]string{"ssh-tunnel": sshTunnelRules, "remote-ssh-tunnel": remoteSSHTunnelRules, "iptables-rule": iptablesRules}
 
 	byteData, err := yaml.Marshal(data)
 	if err != nil {
@@ -274,7 +274,7 @@ func (r *ReconcileExternalService) genSSHTunnelRules(cr *submarinerv1alpha1.Exte
 			if fwdPort == "" || cr.Spec.TargetIP == "" || port.TargetPort.String() == "" || source.SourceIP == "" {
 				continue
 			}
-			rules += fmt.Sprintf("%s:%s:%s,%s\n", fwdPort, cr.Spec.TargetIP, port.TargetPort.String(), source.SourceIP)
+			rules += fmt.Sprintf("%s:%s:%s %s\n", fwdPort, cr.Spec.TargetIP, port.TargetPort.String(), source.SourceIP)
 		}
 	}
 
@@ -305,7 +305,7 @@ func (r *ReconcileExternalService) genRemoteSSHTunnelRules(cr *submarinerv1alpha
 			if source.SourceIP == "" || remoteFwdPort == "" || clusterIP == "" || strconv.Itoa(int(svcPort.Port)) == "" {
 				continue
 			}
-			rules += fmt.Sprintf("%s:%s:%s:%s,%s\n", source.SourceIP, remoteFwdPort, clusterIP, strconv.Itoa(int(svcPort.Port)), source.SourceIP)
+			rules += fmt.Sprintf("%s:%s:%s:%s %s\n", source.SourceIP, remoteFwdPort, clusterIP, strconv.Itoa(int(svcPort.Port)), source.SourceIP)
 		}
 	}
 

@@ -9,11 +9,12 @@ import (
 	"strings"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/golang/glog"
 	"github.com/spf13/viper"
 )
 
 var (
-	confPath = flag.String("conf", "./config.yaml", "Path for the config file.")
+	confPath = flag.String("conf", "/etc/external-service/config/data.yaml", "Path for the config file.")
 )
 
 func init() {
@@ -41,18 +42,22 @@ func registerConfigHandler(path string) error {
 
 func action(v *viper.Viper) error {
 	if err := v.ReadInConfig(); err != nil {
+		glog.Errorf("failed to read config: %v", err)
 		return err
 	}
 
 	if err := updateSSHTunnel(getExpected(v, "ssh-tunnel")); err != nil {
+		glog.Errorf("failed to update ssh tunnel: %v", err)
 		return err
 	}
 
 	if err := updateRemoteSSHTunnel(getExpected(v, "remote-ssh-tunnel")); err != nil {
+		glog.Errorf("failed to update remote ssh tunnel: %v", err)
 		return err
 	}
 
 	if err := updateIptablesRule(getExpected(v, "iptables-rule")); err != nil {
+		glog.Errorf("failed to update iptables rule: %v", err)
 		return err
 	}
 
@@ -78,7 +83,13 @@ func getExistingTunnel(options string) (map[string]string, error) {
 	cmd := exec.Command("ps", "-C", "ssh", "-o", "pid,args", "--no-headers")
 	out, err := cmd.Output()
 	if err != nil {
-		return ret, err
+		if exitError, ok := err.(*exec.ExitError); ok {
+			// ps command will return exit code 1 if no process found,
+			// so return error only when it returns other than 1
+			if exitError.ExitCode() != 1 {
+				return ret, fmt.Errorf("failed to get ssh process: %v", err)
+			}
+		}
 	}
 
 	// Get only pids that has {options} in arguments, and put them to map
@@ -91,6 +102,7 @@ func getExistingTunnel(options string) (map[string]string, error) {
 		fields := strings.Fields(s)
 		// fields needs to be longer than 2, to access to fields[len(fields)-2] below
 		if len(fields) < 2 {
+			glog.Warningf("invalid process string %q: %v", s, err)
 			continue
 		}
 		// pid should be "2747420" in above case, if {options} is "-g -f -N -L"
@@ -100,9 +112,6 @@ func getExistingTunnel(options string) (map[string]string, error) {
 		args := fmt.Sprintf("%s %s", fields[len(fields)-2], fields[len(fields)-1])
 		ret[args] = pid
 	}
-
-	// TODO: Remove this debug message
-	fmt.Printf("existing: %v\n", ret)
 
 	return ret, nil
 }
@@ -120,20 +129,15 @@ func deleteUnusedTunnel(expected []string, options string) error {
 
 	for tun, pid := range existing {
 		if _, ok := expectedMap[tun]; ok {
-			// Existing tunnel is expected
+			// Existing tunnel is expected, no need to delete this tunnel
 			continue
 		}
-		// TODO: Enable this code
-		/*
-
-			// delete unused tunnel
-			cmd := exec.Command("kill", pid)
-			if err := cmd.Run(); err != nil {
-				// TODO: handle error properly
-			}
-		*/
-		// TODO: Delete this debug message
-		fmt.Printf("Kill pid: %s\n", pid)
+		// delete unused tunnel
+		cmd := exec.Command("kill", pid)
+		if err := cmd.Run(); err != nil {
+			// TODO: handle error properly
+			glog.Errorf("failed to execute command %v: %v", cmd, err)
+		}
 	}
 
 	return nil
@@ -160,16 +164,11 @@ func ensureTunnel(expected []string, options string) error {
 			continue
 		}
 		args = append(args, tunStrs...)
-		// TODO: Enable this code
-		/*
-			cmd := exec.Command("ssh", args...)
-
-			if err := cmd.Run(); err != nil {
-				// TODO: handle error properly
-			}
-		*/
-		// TODO: Remove this debug message
-		fmt.Printf("args: %v\n", args)
+		cmd := exec.Command("ssh", args...)
+		if err := cmd.Start(); err != nil {
+			// TODO: handle error properly
+			glog.Errorf("failed to execute command %v: %v", cmd, err)
+		}
 	}
 
 	return nil
@@ -193,15 +192,11 @@ func updateRemoteSSHTunnel(expected []string) error {
 
 func updateIptablesRule(expected []string) error {
 	// Flash existing nat rules
-	// TODO: Enable this code
-	/*
-		cmd := exec.Command("iptables", "-t", "nat", "-F")
-		if err := cmd.Run(); err != nil {
-			// TODO: handle error properly
-		}
-	*/
-	// TODO: Remove this debug message
-	fmt.Printf("iptables -t nat -F\n")
+	cmd := exec.Command("iptables", "-t", "nat", "-F")
+	if err := cmd.Run(); err != nil {
+		glog.Errorf("failed to execute command %v: %v", cmd, err)
+		return err
+	}
 
 	// Apply all rules
 	for _, rule := range expected {
@@ -212,16 +207,12 @@ func updateIptablesRule(expected []string) error {
 			continue
 		}
 		args = append(args, ruleStrs...)
-		// TODO: Enable this code
-		/*
-			cmd := exec.Command("iptables", args...)
+		cmd := exec.Command("iptables", args...)
 
-			if err := cmd.Run(); err != nil {
-				// TODO: handle error properly
-			}
-		*/
-		// TODO: Remove this debug message
-		fmt.Printf("args: %v\n", args)
+		if err := cmd.Run(); err != nil {
+			// TODO: handle error properly
+			glog.Errorf("failed to execute command %v: %v", cmd, err)
+		}
 	}
 
 	return nil
