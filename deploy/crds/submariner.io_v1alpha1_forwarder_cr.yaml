@@ -1,0 +1,7 @@
+apiVersion: submariner.io/v1alpha1
+kind: Forwarder
+metadata:
+  name: example-forwarder
+spec:
+  # Add fields here
+  size: 3
