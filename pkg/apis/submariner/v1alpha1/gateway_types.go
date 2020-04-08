@@ -4,21 +4,33 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
 
 // GatewaySpec defines the desired state of Gateway
 type GatewaySpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
-	// Add custom validation using kubebuilder tags: https://book-v1.book.kubebuilder.io/beyond_basics/generating_crd.html
+	EgressRules  []GatewayRule `json:"egressrules"`
+	IngressRules []GatewayRule `json:"ingressrules"`
+	GatewayIP    string        `json:"gatewayip,omitempty"`
+}
+
+type GatewayRule struct {
+	Protocol    string       `json:"protocol,omitempty"`
+	SourceIP    string       `json:"sourceip,omitempty"`
+	ForwardPort string       `json:"forwardport,omitempty"`
+	TargetIP    string       `json:"targetip,omitempty"`
+	TargetPort  string       `json:"targetport,omitempty"`
+	Forwarder   ForwarderRef `json:"forwarder"`
+}
+
+type ForwarderRef struct {
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name,omitempty"`
 }
 
 // GatewayStatus defines the observed state of Gateway
 type GatewayStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
-	// Add custom validation using kubebuilder tags: https://book-v1.book.kubebuilder.io/beyond_basics/generating_crd.html
+	RuleGeneration int  `json:"rulegeneration,omitempty"`
+	RuleSynced     bool `json:"rulesynced,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
