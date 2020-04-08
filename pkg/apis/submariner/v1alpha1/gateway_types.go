@@ -22,6 +22,7 @@ type GatewayStatus struct {
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +genclient
 
 // Gateway is the Schema for the gateways API
 // +kubebuilder:subresource:status

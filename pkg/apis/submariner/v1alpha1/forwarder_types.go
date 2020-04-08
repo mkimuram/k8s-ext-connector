@@ -22,6 +22,7 @@ type ForwarderStatus struct {
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +genclient
 
 // Forwarder is the Schema for the forwarders API
 // +kubebuilder:subresource:status
