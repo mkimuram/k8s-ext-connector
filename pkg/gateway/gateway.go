@@ -5,15 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/golang/glog"
+	"github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
+	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
 	"github.com/mkimuram/k8s-ext-connector/pkg/util"
-
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/cache"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -23,7 +21,7 @@ const (
 
 // Gateway represents all information to configure a gateway
 type Gateway struct {
-	clientset       *kubernetes.Clientset
+	clientset       *clv1alpha1.SubmarinerV1alpha1Client
 	nic             string
 	netmask         string
 	defaultGW       string
@@ -32,7 +30,7 @@ type Gateway struct {
 }
 
 // NewGateway returns an Gateway instance
-func NewGateway(clientset *kubernetes.Clientset,
+func NewGateway(clientset *clv1alpha1.SubmarinerV1alpha1Client,
 	nic string,
 	netmask string,
 	defaultGW string,
@@ -51,106 +49,65 @@ func NewGateway(clientset *kubernetes.Clientset,
 
 // Reconcile reconciles the gateway configuration to the desired state
 func (g *Gateway) Reconcile() {
-	// Apply all to initialize
-	for {
-		err := g.applyAll()
-		if err == nil {
-			break
-		}
-		glog.Errorf("reconcile: %v", err)
-
-		time.Sleep(10 * time.Second)
-	}
-
-	// Watch configmaps and apply changes if needed
-	watchlist := cache.NewListWatchFromClient(
-		g.clientset.CoreV1().RESTClient(),
-		string(v1.ResourceConfigMaps),
-		g.configNamespace,
-		fields.Everything(),
-	)
-
-	_, controller := cache.NewInformer(
-		watchlist,
-		&v1.ConfigMap{},
-		0,
-		cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				g.handleChanges(obj)
-			},
-			DeleteFunc: func(obj interface{}) {
-				// TODO: handle deletion properly
-			},
-			UpdateFunc: func(oldObj, newObj interface{}) {
-				g.handleChanges(newObj)
-			},
-		},
-	)
-	stop := make(chan struct{})
-	defer close(stop)
-	go controller.Run(stop)
-	for {
-		time.Sleep(time.Second)
-	}
-}
-
-func (g *Gateway) handleChanges(obj interface{}) {
-	configMap, ok := obj.(*v1.ConfigMap)
-	if !ok {
-		// Not a configmap
-		glog.Infof("Not a configmap %v", obj)
-		return
-	}
-
-	// Handle configuration change for IPs
-	if configMap.Name == g.ipConfigName {
-		glog.Infof("Call applyAll to %q", configMap.Name)
-		g.applyAll()
-		// TODO: Handle error prorperly
-		return
-	}
-
-	// Handle configuration change for gateway
-	if util.IsGatewayRule(configMap.Name) {
-		ip, err := util.GetIPfromRuleName(configMap.Name)
-		if err == nil {
-			glog.Infof("Call applyIptablesRules to %q %q", configMap.Name, ip)
-			// TODO: Handle error prorperly
-			g.applyIptablesRules(ip)
-		}
-	}
-}
-
-func (g *Gateway) applyAll() error {
-	ips, err := util.GetIPs(g.clientset, g.configNamespace, g.ipConfigName)
+	opts := metav1.ListOptions{}
+	watch, err := g.clientset.Gateways(g.configNamespace).Watch(opts)
 	if err != nil {
+		panic(err.Error())
+	}
+	go func() {
+		for event := range watch.ResultChan() {
+			glog.Errorf("Type: %v", event.Type)
+			gw, ok := event.Object.(*v1alpha1.Gateway)
+			if !ok {
+				glog.Errorf("Not a forwarder: %v", event.Object)
+				continue
+			}
+			// Generations are different between rule and sync &&
+			// rule is not syncing  && updating == false means, we need to take action
+			if gw.Status.RuleGeneration != gw.Status.SyncGeneration &&
+				!gw.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleSyncing) &&
+				gw.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating) {
+				g.action(gw)
+			}
+		}
+	}()
+
+	// Wait forever
+	select {}
+}
+
+func (g *Gateway) action(gw *v1alpha1.Gateway) error {
+	var err error
+	if gw.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionTrue)) {
+		gw, err = g.clientset.Gateways(g.configNamespace).UpdateStatus(gw)
+		if err != nil {
+			return err
+		}
+		glog.Infof("Update RuleSyncingCondition to true")
+	}
+
+	if err := g.setupIP(gw.Spec.GatewayIP); err != nil {
+		return err
+	}
+	// Apply iptables rules for gw
+	if err := g.applyIptablesRules(gw); err != nil {
 		return err
 	}
 
-	errStr := ""
-	for _, ip := range ips {
-		// Set up gateway for IP
-		glog.Infof("Setting up gateway for %q\n", ip)
-		if err := g.setupIP(ip); err != nil {
-			errStr = errStr + err.Error() + ", "
-			// Skip applying iptables rule below
-			continue
+	if gw.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionFalse)) {
+		gw.Status.SyncGeneration = gw.Status.RuleGeneration
+		gw, err = g.clientset.Gateways(g.configNamespace).UpdateStatus(gw)
+		if err != nil {
+			return err
 		}
-		// Apply iptables rules for IP
-		if err := g.applyIptablesRules(ip); err != nil {
-			errStr = errStr + err.Error() + ", "
-		}
-	}
-
-	// Return error if there are any errors
-	if errStr != "" {
-		return fmt.Errorf("applyAll: %s", errStr)
+		glog.Infof("Update RuleSyncingCondition to false")
 	}
 
 	return nil
 }
 
 func (g *Gateway) setupIP(ip string) error {
+	glog.Infof("Setting up network namespace and ip for %s\n", ip)
 	ns, err := util.GetNs(ip)
 	if err != nil {
 		return err
@@ -330,23 +287,29 @@ func (g *Gateway) ensureSshdRunning(ns, ip string) error {
 	return nil
 }
 
-func (g *Gateway) applyIptablesRules(ip string) error {
-	glog.Infof("Applying iptables rules for %q\n", ip)
-	ns, err := util.GetNs(ip)
+func getExpectedIptablesRule(gw *v1alpha1.Gateway) []string {
+	it := []string{}
+	// Format gw.Spec.IngressRules to
+	//   PREROUTING -t nat -m tcp -p tcp --dst {GatewayIP} --src {SourceIP} --dport {TargetPort} -j DNAT --to-destination {GatewayIp}:{RelayPort}
+	//   POSTROUTING -t nat -m tcp -p tcp --dst {DestinationIP} --dport {RelayPort} -j SNAT --to-source {GatewayIP}
+	// ex)
+	//    PREROUTING -t nat -m tcp -p tcp --dst 192.168.122.200 --src 192.168.122.140 --dport 80 -j DNAT --to-destination 192.168.122.200:2049
+	//    POSTROUTING -t nat -m tcp -p tcp --dst 192.168.122.140 --dport 2049 -j SNAT --to-source 192.168.122.200
+	// TODO: Also handle UDP properly
+	for _, rule := range gw.Spec.EgressRules {
+		it = append(it, fmt.Sprintf("PREROUTING -t nat -m tcp -p tcp --dst %s --src %s --dport %s -j DNAT --to-destination %s:%s\n", gw.Spec.GatewayIP, rule.SourceIP, rule.TargetPort, gw.Spec.GatewayIP, rule.RelayPort))
+		it = append(it, fmt.Sprintf("POSTROUTING -t nat -m tcp -p tcp --dst %s --dport %s -j SNAT --to-source %s\n", rule.DestinationIP, rule.RelayPort, gw.Spec.GatewayIP))
+	}
+
+	return it
+}
+
+func (g *Gateway) applyIptablesRules(gw *v1alpha1.Gateway) error {
+	glog.Infof("Applying iptables rules for %s\n", gw.Name)
+	ns, err := util.GetNs(gw.Spec.GatewayIP)
 	if err != nil {
 		return err
 	}
-
-	ruleName, err := util.GetRuleName(ip)
-	if err != nil {
-		return err
-	}
-
-	rules, err := util.GetIptablesRules(g.clientset, g.configNamespace, ruleName)
-	if err != nil {
-		return err
-	}
-
 	// Clear existing iptables rules in ns
 	cmd := exec.Command("ip", "netns", "exec", ns, "iptables", "-t", "nat", "-F")
 	if err := cmd.Run(); err != nil {
@@ -355,7 +318,7 @@ func (g *Gateway) applyIptablesRules(ip string) error {
 
 	// Apply all iptables rules
 	errStr := ""
-	for _, rule := range rules {
+	for _, rule := range getExpectedIptablesRule(gw) {
 		args := []string{"netns", "exec", ns, "iptables", "-A"}
 		ruleStrs := strings.Fields(rule)
 		if len(ruleStrs) == 0 {

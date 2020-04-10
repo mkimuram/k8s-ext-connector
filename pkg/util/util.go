@@ -169,28 +169,6 @@ func GetIPs(clientset *kubernetes.Clientset, namespace, name string) ([]string, 
 	return []string{}, fmt.Errorf("getIPs: configmap %q in %q namespace not contains ips data", name, namespace)
 }
 
-// GetIptablesRules returns string array of iptables rules defined in configmap named {name} in namespace {namespace}
-// Expected format of configmap is:
-//  rules: |
-//    PREROUTING -t nat -m tcp -p tcp --dst 192.168.122.200 --src 192.168.122.140 --dport 80 -j DNAT --to-destination 192.168.122.200:2049
-//    POSTROUTING -t nat -m tcp -p tcp --dst 192.168.122.140 --dport 2049 -j SNAT --to-source 192.168.122.200
-// For above example, it returns ["PREROUTING..." "POSTROUTING..."]
-func GetIptablesRules(clientset *kubernetes.Clientset, namespace, name string) ([]string, error) {
-	cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(name, metav1.GetOptions{})
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return []string{}, fmt.Errorf("getIptablesRules: configmap %q in %q namespace not found: %v", name, namespace, err)
-		}
-		return []string{}, err
-	}
-
-	if rules, ok := cm.Data["rules"]; ok {
-		return strings.Split(rules, "\n"), nil
-	}
-
-	return []string{}, fmt.Errorf("getIptablesRules: configmap %q in %q namespace not contains rules data", name, namespace)
-}
-
 // GenPort returns string expression of port number that is not marked used in usedPorts
 // It assigns unused port and updates the mapping in usedPorts
 func GenPort(sourceIP string, targetPort string, usedPorts map[string]string) string {

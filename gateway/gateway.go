@@ -8,7 +8,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/mkimuram/k8s-ext-connector/pkg/gateway"
 
-	"k8s.io/client-go/kubernetes"
+	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
 	"k8s.io/client-go/tools/clientcmd"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -16,7 +16,7 @@ import (
 
 var (
 	kubeconfig      *string
-	clientset       *kubernetes.Clientset
+	clientset       *clv1alpha1.SubmarinerV1alpha1Client
 	nic             = flag.String("nic", "eth0", "Name of the nic for parent device of the macvlan device.")
 	netmask         = flag.String("netmask", "24", "Netmask for the gateway in numerical format.")
 	defaultGW       = flag.String("defaultGW", "192.168.122.1", "Default gateway for the device.")
@@ -43,7 +43,7 @@ func init() {
 	}
 
 	// create the clientset
-	clientset, err = kubernetes.NewForConfig(config)
+	clientset, err := clv1alpha1.NewForConfig(config)
 	if err != nil {
 		glog.Errorf("Failed to create client from %q: %v", *kubeconfig, err)
 		os.Exit(1)
