@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	"github.com/operator-framework/operator-sdk/pkg/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -28,10 +29,15 @@ type GatewayRef struct {
 
 // ForwarderStatus defines the observed state of Forwarder
 type ForwarderStatus struct {
-	ForwarderIP    string `json:"forwarderip,omitempty"`
-	RuleGeneration int    `json:"rulegeneration,omitempty"`
-	RuleSynced     bool   `json:"rulesynced,omitempty"`
+	Conditions     status.Conditions `json:"conditions"`
+	ForwarderIP    string            `json:"forwarderip,omitempty"`
+	RuleGeneration int               `json:"rulegeneration,omitempty"`
 }
+
+const (
+	ConditionRuleUpdating status.ConditionType = "RuleUpdating"
+	ConditionRuleSyncing  status.ConditionType = "RuleSyncing"
+)
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +genclient
