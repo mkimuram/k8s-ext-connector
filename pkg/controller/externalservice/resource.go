@@ -15,6 +15,17 @@ func genForwardPodSpec(cr *submarinerv1alpha1.ExternalService) *corev1.Pod {
 	isPrivileged := true
 	var defaultMode int32 = 256
 
+	env := []corev1.EnvVar{
+		{
+			Name:  "FORWARDER_NAMESPACE",
+			Value: cr.Namespace,
+		},
+		{
+			Name:  "FORWARDER_NAME",
+			Value: cr.Name,
+		},
+	}
+
 	volumes := []corev1.Volume{
 		{
 			Name: "data-file",
@@ -57,11 +68,14 @@ func genForwardPodSpec(cr *submarinerv1alpha1.ExternalService) *corev1.Pod {
 			Labels:    labels,
 		},
 		Spec: corev1.PodSpec{
+			// TODO: consider to restrict minimal access permissions
+			ServiceAccountName: "k8s-ext-connector",
 			Containers: []corev1.Container{
 				{
 					Name:            "forwarder",
 					Image:           "forwarder:0.2",
 					SecurityContext: &corev1.SecurityContext{Privileged: &isPrivileged},
+					Env:             env,
 					VolumeMounts:    volumeMounts,
 				},
 			},

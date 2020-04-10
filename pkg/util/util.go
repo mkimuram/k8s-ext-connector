@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	submarinerv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
+	"github.com/operator-framework/operator-sdk/pkg/status"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,10 +35,26 @@ const (
 	// gatewayRulePrefix is a prefix for gateway rule configmap name
 	gatewayRulePrefix = "gwrule"
 	// minPort is the smallest port number that can be used by forwarder pod
-	minPort = 2049
+	MinPort = 2049
 	// maxPort is the biggest port number that can be used by forwarder pod
-	maxPort = 65536
+	MaxPort = 65536
 )
+
+// RuleUpdatingCondition sets submarinerv1alpha1.ConditionRuleUpdating to stat
+func RuleUpdatingCondition(stat corev1.ConditionStatus) status.Condition {
+	return status.Condition{
+		Type:   submarinerv1alpha1.ConditionRuleUpdating,
+		Status: stat,
+	}
+}
+
+// RuleSyncingCondition sets submarinerv1alpha1.ConditionRuleSyncing to stat
+func RuleSyncingCondition(stat corev1.ConditionStatus) status.Condition {
+	return status.Condition{
+		Type:   submarinerv1alpha1.ConditionRuleSyncing,
+		Status: stat,
+	}
+}
 
 // GetHexIP returns hex expression of IP address
 // ex) 192.168.122.1 -> c0a87a01
@@ -176,7 +194,7 @@ func GetIptablesRules(clientset *kubernetes.Clientset, namespace, name string) (
 // GenPort returns string expression of port number that is not marked used in usedPorts
 // It assigns unused port and updates the mapping in usedPorts
 func GenPort(sourceIP string, targetPort string, usedPorts map[string]string) string {
-	for port := minPort; port < maxPort+1; port++ {
+	for port := MinPort; port < MaxPort+1; port++ {
 		strPort := strconv.Itoa(port)
 		if _, ok := usedPorts[strPort]; !ok {
 			usedPorts[strPort] = sourceIP + ":" + targetPort
@@ -206,7 +224,7 @@ func GenRemotePort(port string, usedRemotePorts map[string]string) string {
 	if val, ok := usedRemotePorts[port]; ok {
 		return val
 	}
-	for fwdPort := minPort; fwdPort < maxPort+1; fwdPort++ {
+	for fwdPort := MinPort; fwdPort < MaxPort+1; fwdPort++ {
 		strFwdPort := strconv.Itoa(fwdPort)
 		if _, ok := usedRemotePorts[strFwdPort]; !ok {
 			// Reference for port to forward port

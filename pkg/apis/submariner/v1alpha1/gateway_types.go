@@ -15,12 +15,14 @@ type GatewaySpec struct {
 }
 
 type GatewayRule struct {
-	Protocol    string       `json:"protocol,omitempty"`
-	SourceIP    string       `json:"sourceip,omitempty"`
-	ForwardPort string       `json:"forwardport,omitempty"`
-	TargetIP    string       `json:"targetip,omitempty"`
-	TargetPort  string       `json:"targetport,omitempty"`
-	Forwarder   ForwarderRef `json:"forwarder"`
+	Protocol        string       `json:"protocol,omitempty"`
+	SourceIP        string       `json:"sourceip,omitempty"`
+	TargetPort      string       `json:"targetport,omitempty"`
+	DestinationPort string       `json:"destinationport,omitempty"`
+	DestinationIP   string       `json:"destinationip,omitempty"`
+	Forwarder       ForwarderRef `json:"forwarder"`
+	ForwarderIP     string       `json:"forwarderip,omitempty"`
+	RelayPort       string       `json:"relayport,omitempty"`
 }
 
 type ForwarderRef struct {
@@ -32,6 +34,7 @@ type ForwarderRef struct {
 type GatewayStatus struct {
 	Conditions     status.Conditions `json:"conditions"`
 	RuleGeneration int               `json:"rulegeneration,omitempty"`
+	SyncGeneration int               `json:"syncgeneration,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

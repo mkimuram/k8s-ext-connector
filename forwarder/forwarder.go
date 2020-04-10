@@ -3,73 +3,23 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
-	"github.com/fsnotify/fsnotify"
 	"github.com/golang/glog"
-	"github.com/spf13/viper"
-)
-
-var (
-	confPath = flag.String("conf", "/etc/external-service/config/data.yaml", "Path for the config file.")
+	v1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
+	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
+	"github.com/mkimuram/k8s-ext-connector/pkg/util"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/client-go/rest"
 )
 
 func init() {
+	flag.Set("logtostderr", "true")
+	flag.Set("stderrthreshold", "INFO")
 	flag.Parse()
-}
-
-func registerConfigHandler(path string) error {
-	v := viper.New()
-	v.AddConfigPath(filepath.Dir(path))
-	v.SetConfigName(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
-
-	// Do first call of action
-	if err := action(v); err != nil {
-		return err
-	}
-
-	// Register action on change
-	v.WatchConfig()
-	v.OnConfigChange(func(e fsnotify.Event) {
-		action(v)
-	})
-
-	return nil
-}
-
-func action(v *viper.Viper) error {
-	if err := v.ReadInConfig(); err != nil {
-		glog.Errorf("failed to read config: %v", err)
-		return err
-	}
-
-	if err := updateSSHTunnel(getExpected(v, "ssh-tunnel")); err != nil {
-		glog.Errorf("failed to update ssh tunnel: %v", err)
-		return err
-	}
-
-	if err := updateRemoteSSHTunnel(getExpected(v, "remote-ssh-tunnel")); err != nil {
-		glog.Errorf("failed to update remote ssh tunnel: %v", err)
-		return err
-	}
-
-	if err := updateIptablesRule(getExpected(v, "iptables-rule")); err != nil {
-		glog.Errorf("failed to update iptables rule: %v", err)
-		return err
-	}
-
-	return nil
-}
-
-func getExpected(v *viper.Viper, key string) []string {
-	val := v.Get(key)
-	if str, ok := val.(string); ok {
-		return strings.Split(str, "\n")
-	}
-	return []string{}
 }
 
 func getExistingTunnel(options string) (map[string]string, error) {
@@ -218,11 +168,135 @@ func updateIptablesRule(expected []string) error {
 	return nil
 }
 
-func main() {
-	if err := registerConfigHandler(*confPath); err != nil {
-		fmt.Println("error:", err.Error())
-		os.Exit(1)
+func getExpectedSSHTunnel(fwd *v1alpha1.Forwarder) []string {
+	st := []string{}
+	// Format fwd.Spec.EgressRules to
+	//   {RelayPort}:{DestinationIp}:{DestinationPort} {GatewayIP}
+	// ex)
+	//   "2049:192.168.122.140:8000 192.168.122.201"
+	for _, rule := range fwd.Spec.EgressRules {
+		st = append(st, fmt.Sprintf("%s:%s:%s %s", rule.RelayPort, rule.DestinationIP, rule.DestinationPort, rule.GatewayIP))
 	}
+
+	return st
+}
+
+func getExpectedRemoteSSHTunnel(fwd *v1alpha1.Forwarder) []string {
+	rt := []string{}
+	// Format fwd.Spec.IngressRules to
+	//   {GatewayIP}:{RelayPort}:{DestinationIp}:{DestinationPort} {GatewayIP}
+	// ex)
+	//   "192.168.122.201:2049:10.96.218.78:80 192.168.122.201"
+
+	// TODO
+
+	for _, rule := range fwd.Spec.IngressRules {
+		rt = append(rt, fmt.Sprintf("%s:%s:%s:%s %s", rule.GatewayIP, rule.RelayPort, rule.DestinationIP, rule.DestinationPort, rule.GatewayIP))
+	}
+
+	return rt
+}
+
+func getExpectedIptablesRule(fwd *v1alpha1.Forwarder) []string {
+	it := []string{}
+	// Format fwd.Spec.EgressRules to
+	//   PREROUTING -t nat -m tcp -p tcp --dst {ForwarderIP} --src {SourceIP} --dport {TargetPort} -j DNAT --to-destination {ForwarderIp}:{RelayPort}
+	//   POSTROUTING -t nat -m tcp -p tcp --dst {DestinationIP} --dport {RelayPort} -j SNAT --to-source {ForwarderIP}
+	// ex)
+	//   "PREROUTING -t nat -m tcp -p tcp --dst 10.244.0.34 --src 10.244.0.11 --dport 8000 -j DNAT --to-destination 10.244.0.34:2049"
+	//   "POSTROUTING -t nat -m tcp -p tcp --dst 192.168.122.139 --dport 2049 -j SNAT --to-source 10.244.0.34"
+	// TODO: Also handle UDP properly
+	for _, rule := range fwd.Spec.EgressRules {
+		it = append(it, fmt.Sprintf("PREROUTING -t nat -m tcp -p tcp --dst %s --src %s --dport %s -j DNAT --to-destination %s:%s\n", fwd.Spec.ForwarderIP, rule.SourceIP, rule.TargetPort, fwd.Spec.ForwarderIP, rule.RelayPort))
+		it = append(it, fmt.Sprintf("POSTROUTING -t nat -m tcp -p tcp --dst %s --dport %s -j SNAT --to-source %s\n", rule.DestinationIP, rule.RelayPort, fwd.Spec.ForwarderIP))
+	}
+
+	return it
+}
+
+func action(cl *clv1alpha1.SubmarinerV1alpha1Client, ns string, fwd *v1alpha1.Forwarder) error {
+	var err error
+	if fwd.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionTrue)) {
+		fwd, err = cl.Forwarders(ns).UpdateStatus(fwd)
+		if err != nil {
+			return err
+		}
+		glog.Infof("Update RuleSyncingCondition to true")
+	}
+
+	st := getExpectedSSHTunnel(fwd)
+	glog.Infof("ExpectedSSHTunnel: %v", st)
+	if err := updateSSHTunnel(st); err != nil {
+		glog.Errorf("failed to update ssh tunnel: %v", err)
+		return err
+	}
+
+	rt := getExpectedRemoteSSHTunnel(fwd)
+	glog.Infof("ExpectedRemoteSSHTunnel: %v", rt)
+	if err := updateRemoteSSHTunnel(rt); err != nil {
+		glog.Errorf("failed to update remote ssh tunnel: %v", err)
+		return err
+	}
+
+	it := getExpectedIptablesRule(fwd)
+	glog.Infof("ExpectedIptablesRule: %v", it)
+	if err := updateIptablesRule(it); err != nil {
+		glog.Errorf("failed to update iptables rule: %v", err)
+		return err
+	}
+
+	if fwd.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionFalse)) {
+		fwd.Status.SyncGeneration = fwd.Status.RuleGeneration
+		fwd, err = cl.Forwarders(ns).UpdateStatus(fwd)
+		if err != nil {
+			return err
+		}
+		glog.Infof("Update RuleSyncingCondition to false")
+	}
+
+	return nil
+}
+
+func main() {
+	// creates the in-cluster config
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		panic(err.Error())
+	}
+	// creates the clientset
+	clientset, err := clv1alpha1.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	ns := "external-services"
+	name := "my-externalservice"
+	opts := metav1.ListOptions{FieldSelector: fmt.Sprintf("metadata.name=%s", name)}
+
+	watch, err := clientset.Forwarders(ns).Watch(opts)
+	if err != nil {
+		panic(err.Error())
+	}
+	go func() {
+		for event := range watch.ResultChan() {
+			glog.Errorf("Type: %v", event.Type)
+			fwd, ok := event.Object.(*v1alpha1.Forwarder)
+			if !ok {
+				glog.Errorf("Not a forwarder: %v", event.Object)
+				continue
+			}
+			// Generations are different between rule and sync &&
+			// rule is not syncing  && updating == false means, we need to take action
+			if fwd.Status.RuleGeneration != fwd.Status.SyncGeneration &&
+				!fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleSyncing) &&
+				fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating) {
+				action(clientset, ns, fwd)
+			}
+		}
+	}()
+
+	// TODO: Add codes to occasionally check the current status really synced,
+	//       because network errors or gateway changes might make it out of sync.
 
 	// Wait forever
 	select {}

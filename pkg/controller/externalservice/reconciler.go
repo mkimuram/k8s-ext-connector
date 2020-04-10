@@ -8,7 +8,6 @@ import (
 	"github.com/go-logr/logr"
 	submarinerv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
 	"github.com/mkimuram/k8s-ext-connector/pkg/util"
-	"github.com/operator-framework/operator-sdk/pkg/status"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -120,15 +119,28 @@ func (r *ReconcileExternalService) Reconcile(request reconcile.Request) (reconci
 		return reconcile.Result{}, err
 	}
 
-	// Update forwarder CRD
-	err = updateForwarderRules(r.client, instance)
+	// Update configmap for gateways
+	// TODO: Remove this after crd version is implemented
+	err = r.updateConfigmapDataForGateways(instance)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
 
-	// Update configmap for gateways
-	// TODO: Remove this after crd version is implemented
-	err = r.updateConfigmapDataForGateways(instance)
+	// Get list of all forwarders
+	fwds := &submarinerv1alpha1.ForwarderList{}
+	opts := []client.ListOption{}
+	if err := r.client.List(context.TODO(), fwds, opts...); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	// Get list of all gateways
+	gws := &submarinerv1alpha1.GatewayList{}
+	if err := r.client.List(context.TODO(), gws, opts...); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	// Update forwarder CRD
+	err = updateForwarderRules(r.client, instance)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
@@ -140,6 +152,70 @@ func (r *ReconcileExternalService) Reconcile(request reconcile.Request) (reconci
 	}
 
 	return reconcile.Result{}, nil
+}
+
+func genUsedPortsForEgress(fwd *submarinerv1alpha1.Forwarder) map[string]string {
+	usedPorts := map[string]string{}
+	for _, erule := range fwd.Spec.EgressRules {
+		usedPorts[erule.RelayPort] = erule.TargetPort
+	}
+	return usedPorts
+}
+
+func genRelayPortForEgress(srcIP string, tPort string, ePorts map[string]string) (string, error) {
+	// Find relayPort from ePorts and return the value if already exists
+	for k, v := range ePorts {
+		if v == srcIP+":"+tPort {
+			return k, nil
+		}
+	}
+
+	// Assign new relayPort and update ePorts
+	for port := util.MinPort; port < util.MaxPort+1; port++ {
+		strPort := strconv.Itoa(port)
+		if _, ok := ePorts[strPort]; !ok {
+			ePorts[strPort] = srcIP + ":" + tPort
+			return strPort, nil
+		}
+	}
+
+	return "", fmt.Errorf("RelayPort exhausted")
+}
+
+func genUsedPortsForIngress(gws *submarinerv1alpha1.GatewayList) map[string]map[string]string {
+	usedPorts := map[string]map[string]string{}
+	for _, gw := range gws.Items {
+		if _, ok := usedPorts[gw.Name]; !ok {
+			usedPorts[gw.Name] = map[string]string{}
+		}
+		for _, irule := range gw.Spec.IngressRules {
+			usedPorts[gw.Name][irule.RelayPort] = irule.SourceIP + ":" + irule.TargetPort
+		}
+	}
+	return usedPorts
+}
+
+func genRelayPortForIngress(srcIP string, tPort string, gwName string, iPorts map[string]map[string]string) (string, error) {
+	if _, ok := iPorts[gwName]; !ok {
+		iPorts[gwName] = map[string]string{}
+	}
+	// Find relayPort from ePorts and return the value if already exists
+	for k, v := range iPorts[gwName] {
+		if v == srcIP+":"+tPort {
+			return k, nil
+		}
+	}
+
+	// Assign new relayPort and update ePorts
+	for port := util.MinPort; port < util.MaxPort+1; port++ {
+		strPort := strconv.Itoa(port)
+		if _, ok := iPorts[gwName][strPort]; !ok {
+			iPorts[gwName][strPort] = srcIP + ":" + tPort
+			return strPort, nil
+		}
+	}
+
+	return "", fmt.Errorf("RelayPort exhausted")
 }
 
 func getEndpointAddrs(cl client.Client, ns string, name string) ([]string, error) {
@@ -159,7 +235,7 @@ func getEndpointAddrs(cl client.Client, ns string, name string) ([]string, error
 	return addrs, nil
 }
 
-func genForwarderEgressRules(cl client.Client, cr *submarinerv1alpha1.ExternalService) ([]submarinerv1alpha1.ForwarderRule, error) {
+func genForwarderEgressRules(cl client.Client, cr *submarinerv1alpha1.ExternalService, ePorts map[string]string) ([]submarinerv1alpha1.ForwarderRule, error) {
 	eRules := []submarinerv1alpha1.ForwarderRule{}
 
 	for _, src := range cr.Spec.Sources {
@@ -181,13 +257,19 @@ func genForwarderEgressRules(cl client.Client, cr *submarinerv1alpha1.ExternalSe
 
 		for _, port := range cr.Spec.Ports {
 			for _, srcIP := range addrs {
+				rPort, err := genRelayPortForEgress(srcIP, port.TargetPort.String(), ePorts)
+				if err != nil {
+					return eRules, err
+				}
 				er := submarinerv1alpha1.ForwarderRule{
-					Protocol:    string(port.Protocol),
-					SourceIP:    srcIP,
-					ForwardPort: strconv.Itoa(int(port.Port)),
-					TargetIP:    cr.Spec.TargetIP,
-					TargetPort:  port.TargetPort.String(),
-					Gateway:     gw,
+					Protocol:        string(port.Protocol),
+					SourceIP:        srcIP,
+					TargetPort:      port.TargetPort.String(),
+					DestinationPort: strconv.Itoa(int(port.Port)),
+					DestinationIP:   cr.Spec.TargetIP,
+					Gateway:         gw,
+					GatewayIP:       src.SourceIP,
+					RelayPort:       rPort,
 				}
 				eRules = append(eRules, er)
 			}
@@ -197,7 +279,9 @@ func genForwarderEgressRules(cl client.Client, cr *submarinerv1alpha1.ExternalSe
 	return eRules, nil
 }
 
-func genForwarderIngressRules(cl client.Client, cr *submarinerv1alpha1.ExternalService) ([]submarinerv1alpha1.ForwarderRule, error) {
+func genForwarderIngressRules(cl client.Client, cr *submarinerv1alpha1.ExternalService, iPorts map[string]map[string]string) ([]submarinerv1alpha1.ForwarderRule, error) {
+	reqLogger := log.WithValues("Request.Namespace", cr.Namespace, "Request.Name", cr.Name)
+	reqLogger.Info("genForwarderIngressRules")
 	iRules := []submarinerv1alpha1.ForwarderRule{}
 
 	for _, src := range cr.Spec.Sources {
@@ -218,32 +302,27 @@ func genForwarderIngressRules(cl client.Client, cr *submarinerv1alpha1.ExternalS
 		}
 
 		for _, svcPort := range svc.Spec.Ports {
+			rPort, err := genRelayPortForIngress(cr.Spec.TargetIP, strconv.Itoa(int(svcPort.Port)), gwName, iPorts)
+			reqLogger.Info("genRelayPortForIngress", "targetIP", cr.Spec.TargetIP, "port", strconv.Itoa(int(svcPort.Port)), "gwName", gwName, "rPort", rPort, "iPorts", iPorts)
+			if err != nil {
+				return iRules, err
+			}
+
 			ir := submarinerv1alpha1.ForwarderRule{
-				Protocol:    string(svcPort.Protocol),
-				SourceIP:    cr.Spec.TargetIP,
-				ForwardPort: strconv.Itoa(int(svcPort.Port)),
-				TargetIP:    svc.Spec.ClusterIP,
-				TargetPort:  strconv.Itoa(int(svcPort.Port)),
-				Gateway:     gw,
+				Protocol:        string(svcPort.Protocol),
+				SourceIP:        cr.Spec.TargetIP,
+				TargetPort:      strconv.Itoa(int(svcPort.Port)),
+				DestinationPort: strconv.Itoa(int(svcPort.Port)),
+				DestinationIP:   svc.Spec.ClusterIP,
+				Gateway:         gw,
+				GatewayIP:       src.SourceIP,
+				RelayPort:       rPort,
 			}
 			iRules = append(iRules, ir)
 		}
 	}
 
 	return iRules, nil
-}
-
-func RuleUpdatingCondition(stat corev1.ConditionStatus) status.Condition {
-	return status.Condition{
-		Type:   submarinerv1alpha1.ConditionRuleUpdating,
-		Status: stat,
-	}
-}
-func RuleSyncingCondition(stat corev1.ConditionStatus) status.Condition {
-	return status.Condition{
-		Type:   submarinerv1alpha1.ConditionRuleSyncing,
-		Status: stat,
-	}
 }
 
 func updateForwarderRules(cl client.Client, cr *submarinerv1alpha1.ExternalService) error {
@@ -270,23 +349,35 @@ func updateForwarderRules(cl client.Client, cr *submarinerv1alpha1.ExternalServi
 		}
 	}
 	// Update RuleUpdatingCondition to true
-	if fwd.Status.Conditions.SetCondition(RuleUpdatingCondition(corev1.ConditionTrue)) {
+	if fwd.Status.Conditions.SetCondition(util.RuleUpdatingCondition(corev1.ConditionTrue)) {
 		if err := cl.Status().Update(context.TODO(), fwd); err != nil {
 			return err
 		}
 		reqLogger.Info("Update RuleUpdatingCondition to true", "forwarder", fwd.Name)
 	}
 
-	// TODO: get forwarderIP properly
-	fwdIP := ""
-
-	// Generate new rules
-	eRules, err := genForwarderEgressRules(cl, cr)
+	// Get forwarderPod's IP
+	fwdPod := &corev1.Pod{}
+	err = cl.Get(context.TODO(), types.NamespacedName{Name: cr.Name, Namespace: ConnectorNamespace}, fwdPod)
 	if err != nil {
 		return err
 	}
 
-	iRules, err := genForwarderIngressRules(cl, cr)
+	// Generate new rules
+	ePorts := genUsedPortsForEgress(fwd)
+	eRules, err := genForwarderEgressRules(cl, cr, ePorts)
+	if err != nil {
+		return err
+	}
+
+	// Get list of all gateways
+	gws := &submarinerv1alpha1.GatewayList{}
+	opts := []client.ListOption{}
+	if err := cl.List(context.TODO(), gws, opts...); err != nil {
+		return err
+	}
+	iPorts := genUsedPortsForIngress(gws)
+	iRules, err := genForwarderIngressRules(cl, cr, iPorts)
 	if err != nil {
 		return err
 	}
@@ -294,6 +385,7 @@ func updateForwarderRules(cl client.Client, cr *submarinerv1alpha1.ExternalServi
 	// Update with new rule
 	fwd.Spec.EgressRules = eRules
 	fwd.Spec.IngressRules = iRules
+	fwd.Spec.ForwarderIP = fwdPod.Status.PodIP
 	// TODO: skip updating if there are no changes
 	if err := cl.Update(context.TODO(), fwd); err != nil {
 		return err
@@ -301,20 +393,23 @@ func updateForwarderRules(cl client.Client, cr *submarinerv1alpha1.ExternalServi
 	reqLogger.Info("Update to new rule", "forwarder", fwd.Name, "egressRules", eRules, "ingressRules", iRules)
 
 	// Update RuleUpdatingCondition to false
-	if fwd.Status.Conditions.SetCondition(RuleUpdatingCondition(corev1.ConditionFalse)) ||
-		fwd.Status.Conditions.SetCondition(RuleSyncingCondition(corev1.ConditionUnknown)) {
-		fwd.Status.ForwarderIP = fwdIP
+	updateChanged := fwd.Status.Conditions.SetCondition(util.RuleUpdatingCondition(corev1.ConditionFalse))
+	syncChanged := fwd.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionUnknown))
+	if updateChanged || syncChanged {
 		fwd.Status.RuleGeneration += 1
 		if err := cl.Status().Update(context.TODO(), fwd); err != nil {
 			return err
 		}
-		reqLogger.Info("Update RuleUpdatingCondition to true", "forwarder", fwd.Name)
+		reqLogger.Info("Update RuleUpdatingCondition to false and SyncingCondition to unknown", "forwarder", fwd.Name)
 	}
 
 	return nil
 }
 
 func genGatewayEgressRules(cl client.Client, fwds *submarinerv1alpha1.ForwarderList, gw *submarinerv1alpha1.Gateway) []submarinerv1alpha1.GatewayRule {
+	reqLogger := log.WithValues("gw.Namespace", gw.Namespace, "gw.Name", gw.Name)
+	reqLogger.Info("genGatewayEgressRules")
+
 	egressRules := []submarinerv1alpha1.GatewayRule{}
 
 	for _, fwd := range fwds.Items {
@@ -323,16 +418,19 @@ func genGatewayEgressRules(cl client.Client, fwds *submarinerv1alpha1.ForwarderL
 				// Skip unrelated forwarder
 				continue
 			}
+			reqLogger.Info("values", "SourceIP", rule.SourceIP, "TargetPort", rule.TargetPort, "RelayPort", rule.RelayPort)
 			eRule := submarinerv1alpha1.GatewayRule{
-				Protocol:    rule.Protocol,
-				SourceIP:    rule.SourceIP,
-				ForwardPort: rule.ForwardPort,
-				TargetIP:    rule.TargetIP,
-				TargetPort:  rule.TargetPort,
+				Protocol:        rule.Protocol,
+				SourceIP:        rule.SourceIP,
+				TargetPort:      rule.TargetPort,
+				DestinationIP:   rule.DestinationIP,
+				DestinationPort: rule.DestinationPort,
 				Forwarder: submarinerv1alpha1.ForwarderRef{
 					Namespace: fwd.Namespace,
 					Name:      fwd.Name,
 				},
+				ForwarderIP: fwd.Spec.ForwarderIP,
+				RelayPort:   rule.RelayPort,
 			}
 			egressRules = append(egressRules, eRule)
 		}
@@ -351,15 +449,17 @@ func genGatewayIngressRules(cl client.Client, fwds *submarinerv1alpha1.Forwarder
 				continue
 			}
 			iRule := submarinerv1alpha1.GatewayRule{
-				Protocol:    rule.Protocol,
-				SourceIP:    rule.SourceIP,
-				ForwardPort: rule.ForwardPort,
-				TargetIP:    rule.TargetIP,
-				TargetPort:  rule.TargetPort,
+				Protocol:        rule.Protocol,
+				SourceIP:        rule.SourceIP,
+				TargetPort:      rule.TargetPort,
+				DestinationIP:   rule.DestinationIP,
+				DestinationPort: rule.DestinationPort,
 				Forwarder: submarinerv1alpha1.ForwarderRef{
 					Namespace: fwd.Namespace,
 					Name:      fwd.Name,
 				},
+				ForwarderIP: fwd.Spec.ForwarderIP,
+				RelayPort:   rule.RelayPort,
 			}
 			ingressRules = append(ingressRules, iRule)
 		}
@@ -368,11 +468,11 @@ func genGatewayIngressRules(cl client.Client, fwds *submarinerv1alpha1.Forwarder
 	return ingressRules
 }
 
-func updateRulesForOneGateway(cl client.Client, fwds *submarinerv1alpha1.ForwarderList, gw *submarinerv1alpha1.Gateway) error {
+func updateRulesForOneGateway(cl client.Client, fwds *submarinerv1alpha1.ForwarderList, gw *submarinerv1alpha1.Gateway, gwIP string) error {
 	reqLogger := log.WithValues("Gateway.Namespace", gw.Namespace, "Gateway.Name", gw.Name)
 	reqLogger.Info("updateRulesForOneGateway")
 	// Update RuleUpdatingCondition to true
-	if gw.Status.Conditions.SetCondition(RuleUpdatingCondition(corev1.ConditionTrue)) {
+	if gw.Status.Conditions.SetCondition(util.RuleUpdatingCondition(corev1.ConditionTrue)) {
 		if err := cl.Status().Update(context.TODO(), gw); err != nil {
 			return err
 		}
@@ -382,6 +482,7 @@ func updateRulesForOneGateway(cl client.Client, fwds *submarinerv1alpha1.Forward
 	// Generate new rules
 	gw.Spec.EgressRules = genGatewayEgressRules(cl, fwds, gw)
 	gw.Spec.IngressRules = genGatewayIngressRules(cl, fwds, gw)
+	gw.Spec.GatewayIP = gwIP
 	// Update with new rule
 	// TODO: skip updating if there are no changes
 	if err := cl.Update(context.TODO(), gw); err != nil {
@@ -389,25 +490,26 @@ func updateRulesForOneGateway(cl client.Client, fwds *submarinerv1alpha1.Forward
 	}
 	reqLogger.Info("Update to new rule", "gateway", gw.Name, "egressRules", gw.Spec.EgressRules, "ingressRules", gw.Spec.IngressRules)
 
-	// Update RuleUpdatingCondition to false
-	if gw.Status.Conditions.SetCondition(RuleUpdatingCondition(corev1.ConditionFalse)) ||
-		gw.Status.Conditions.SetCondition(RuleSyncingCondition(corev1.ConditionUnknown)) {
+	// Update UpdatingCondition to false and SyncingCondition to unknown
+	updateChanged := gw.Status.Conditions.SetCondition(util.RuleUpdatingCondition(corev1.ConditionFalse))
+	syncChanged := gw.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionUnknown))
+	if updateChanged || syncChanged {
 		gw.Status.RuleGeneration += 1
 		if err := cl.Status().Update(context.TODO(), gw); err != nil {
 			return err
 		}
-		reqLogger.Info("Update RuleUpdatingCondition to true", "gateway", gw.Name)
+		reqLogger.Info("Update RuleUpdatingCondition to false and RuleSyncingCondition to unknown", "gateway", gw.Name)
 	}
 
 	return nil
 }
 
-func getUniqueGatweyNamespacedName(rules []submarinerv1alpha1.ForwarderRule) []types.NamespacedName {
+func getUniqueGatwey(rules []submarinerv1alpha1.ForwarderRule) map[string]types.NamespacedName {
 	nMap := map[string]types.NamespacedName{}
 
 	// Make a map to remove duplicated
 	for _, rule := range rules {
-		val := rule.Gateway.Namespace + ":" + rule.Gateway.Name
+		val := rule.GatewayIP
 		if _, ok := nMap[val]; ok {
 			// skip adding to map
 			continue
@@ -418,13 +520,7 @@ func getUniqueGatweyNamespacedName(rules []submarinerv1alpha1.ForwarderRule) []t
 		}
 	}
 
-	// Make a slice from map
-	nArr := []types.NamespacedName{}
-	for _, n := range nMap {
-		nArr = append(nArr, n)
-	}
-
-	return nArr
+	return nMap
 }
 
 func updateGatewayRules(cl client.Client, cr *submarinerv1alpha1.ExternalService) error {
@@ -440,14 +536,14 @@ func updateGatewayRules(cl client.Client, cr *submarinerv1alpha1.ExternalService
 		return err
 	}
 
-	// Get list of all forwarders to be used to create gateway rules in below loop
+	// Get list of all forwarders
 	fwds := &submarinerv1alpha1.ForwarderList{}
 	opts := []client.ListOption{}
 	if err := cl.List(context.TODO(), fwds, opts...); err != nil {
 		return err
 	}
 
-	for _, n := range getUniqueGatweyNamespacedName(fwd.Spec.IngressRules) {
+	for gwIP, n := range getUniqueGatwey(fwd.Spec.IngressRules) {
 		gw := &submarinerv1alpha1.Gateway{}
 		err := cl.Get(context.TODO(), n, gw)
 		if err != nil {
@@ -467,7 +563,7 @@ func updateGatewayRules(cl client.Client, cr *submarinerv1alpha1.ExternalService
 			}
 		}
 
-		if err := updateRulesForOneGateway(cl, fwds, gw); err != nil {
+		if err := updateRulesForOneGateway(cl, fwds, gw, gwIP); err != nil {
 			return err
 		}
 	}
