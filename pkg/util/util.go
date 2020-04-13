@@ -1,24 +1,15 @@
 package util
 
 import (
-	"context"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	submarinerv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
 	"github.com/operator-framework/operator-sdk/pkg/status"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	yaml "gopkg.in/yaml.v2"
 )
 
 const (
@@ -102,11 +93,6 @@ func GetIPfromRuleName(ruleName string) (string, error) {
 	return GetDecIPFromHexIP(strings.TrimPrefix(ruleName, gatewayRulePrefix))
 }
 
-// IsGatewayRule returns true if name is gatewayRule, otherwise return false
-func IsGatewayRule(name string) bool {
-	return strings.HasPrefix(name, gatewayRulePrefix)
-}
-
 // GetNs returns network namespace name for gateway which has ip
 // ex) 192.168.122.1 -> nsc0a87a01
 func GetNs(ip string) (string, error) {
@@ -145,154 +131,4 @@ func GetPidFile(ip, prefix string) (string, error) {
 	pidFileName := prefix + hexIP + pidFileSuffix
 
 	return filepath.Join(pidFilePath, pidFileName), nil
-}
-
-// GetIPs returns string array of IPs defined in configmap named {name} in namespace {namespace}
-// Expected format of configmap is:
-//  ips: |
-//    192.168.122.200
-//    192.168.122.201
-// For above example, it returns ["192.168.122.200" "192.168.122.201"]
-func GetIPs(clientset *kubernetes.Clientset, namespace, name string) ([]string, error) {
-	cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(name, metav1.GetOptions{})
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return []string{}, fmt.Errorf("getIPs: configmap %q in %q namespace not found: %v", name, namespace, err)
-		}
-		return []string{}, err
-	}
-
-	if ips, ok := cm.Data["ips"]; ok {
-		return strings.Fields(ips), nil
-	}
-
-	return []string{}, fmt.Errorf("getIPs: configmap %q in %q namespace not contains ips data", name, namespace)
-}
-
-// GenPort returns string expression of port number that is not marked used in usedPorts
-// It assigns unused port and updates the mapping in usedPorts
-func GenPort(sourceIP string, targetPort string, usedPorts map[string]string) string {
-	for port := MinPort; port < MaxPort+1; port++ {
-		strPort := strconv.Itoa(port)
-		if _, ok := usedPorts[strPort]; !ok {
-			usedPorts[strPort] = sourceIP + ":" + targetPort
-			return strPort
-		}
-	}
-
-	return ""
-}
-
-// GetPort returns string expression of port number that is marked used for sourceIP and targetPort
-// in usedPorts
-func GetPort(sourceIP string, targetPort string, usedPorts map[string]string) string {
-	for port, usedBy := range usedPorts {
-		if usedBy == sourceIP+":"+targetPort {
-			return port
-		}
-	}
-
-	return ""
-}
-
-// GenRemotePort returns string expression of port number that is not marked used in usedRemotePorts
-// It returns the same port as defined in usedRemotePorts if it is already assigned.
-// If not, it assigns unused port and updates the mapping in usedRemotePorts
-func GenRemotePort(port string, usedRemotePorts map[string]string) string {
-	if val, ok := usedRemotePorts[port]; ok {
-		return val
-	}
-	for fwdPort := MinPort; fwdPort < MaxPort+1; fwdPort++ {
-		strFwdPort := strconv.Itoa(fwdPort)
-		if _, ok := usedRemotePorts[strFwdPort]; !ok {
-			// Reference for port to forward port
-			usedRemotePorts[port] = strFwdPort
-			// Reference for forward port to port
-			usedRemotePorts[strFwdPort] = port
-			return strFwdPort
-		}
-	}
-
-	return ""
-}
-
-// GetRemoteFwdPort returns string expression of port number that is defined used in configmap
-// Expected format of configmap is:
-//  data.yaml: |
-//    remote-ssh-tunnel: |
-//      192.168.122.200:2049:10.96.223.183:80 192.168.122.200
-//      192.168.122.201:2050:10.96.218.78:80 192.168.122.201
-// For above example, it returns "2049", if clusterIP is "10.96.223.183",
-// sourceIP is "192.168.122.200", and remotePort is "80"
-func GetRemoteFwdPort(esconfig *corev1.ConfigMap, clusterIP, sourceIP, remotePort string) (string, error) {
-	var remoteRules string
-	var hasData bool
-
-	if data, ok := esconfig.Data["data.yaml"]; ok {
-		yamlData := make(map[string]string)
-		err := yaml.Unmarshal([]byte(data), yamlData)
-		if err != nil {
-			return "", err
-		}
-		remoteRules, hasData = yamlData["remote-ssh-tunnel"]
-	}
-	if !hasData {
-		return "", fmt.Errorf("getRemoteFwdPort: configMap doesn't have data")
-	}
-	for _, s := range strings.Split(string(remoteRules), "\n") {
-		// Fields are like below:
-		// {sourceIP}:{remoteFwdPort}:{clusterIP}:{remotePort} {sourceIP}
-		// ex)
-		// 192.168.122.200:2049:10.96.223.183:80 192.168.122.200
-		sps := strings.Fields(s)
-		if len(sps) < 2 {
-			continue
-		}
-		cols := strings.Split(sps[0], ":")
-		if len(cols) < 4 {
-			continue
-		}
-		if cols[0] == sourceIP && cols[2] == clusterIP && cols[3] == remotePort {
-			return cols[1], nil
-		}
-	}
-
-	return "", fmt.Errorf("getRemoteFwdPort: remoteFwdPort not found")
-}
-
-// GetUsedRemotePorts returns string-to-string map of port number that is defined used in configmap
-// Expected format of configmap is:
-//  rules: |
-//    PREROUTING -t nat -m tcp -p tcp --dst 192.168.122.200 --src 192.168.122.140 --dport 80 -j DNAT --to-destination 192.168.122.200:2049
-//    POSTROUTING -t nat -m tcp -p tcp --dst 192.168.122.140 --dport 2049 -j SNAT --to-source 192.168.122.200
-// For above example, it returns map[string]string{"80": "2049", "2049": "80"}
-func GetUsedRemotePorts(client client.Client, namespace, sourceIP string) (map[string]string, error) {
-	usedRemotePorts := map[string]string{}
-
-	configmapName, err := GetRuleName(sourceIP)
-	if err != nil {
-		return usedRemotePorts, err
-	}
-
-	configMap := &corev1.ConfigMap{}
-	if err := client.Get(context.TODO(), types.NamespacedName{Name: configmapName, Namespace: namespace}, configMap); err != nil && !errors.IsNotFound(err) {
-		return usedRemotePorts, err
-	}
-
-	if rules, ok := configMap.Data["rules"]; ok {
-		for _, s := range strings.Split(string(rules), "\n") {
-			fields := strings.Fields(s)
-			if len(fields) > 16 && fields[0] == "PREROUTING" {
-				ipPort := strings.Split(fields[16], ":")
-				if len(ipPort) > 1 {
-					// Reference for port to forward port
-					usedRemotePorts[fields[13]] = ipPort[1]
-					// Reference for forward port to port
-					usedRemotePorts[ipPort[1]] = fields[13]
-				}
-			}
-		}
-	}
-
-	return usedRemotePorts, nil
 }

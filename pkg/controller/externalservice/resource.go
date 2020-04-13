@@ -28,16 +28,6 @@ func genForwardPodSpec(cr *submarinerv1alpha1.ExternalService) *corev1.Pod {
 
 	volumes := []corev1.Volume{
 		{
-			Name: "data-file",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: cr.Name,
-					},
-				},
-			},
-		},
-		{
 			Name: "ssh-key-volume",
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
@@ -49,11 +39,6 @@ func genForwardPodSpec(cr *submarinerv1alpha1.ExternalService) *corev1.Pod {
 	}
 
 	volumeMounts := []corev1.VolumeMount{
-		{
-			Name:      "data-file",
-			MountPath: "/etc/external-service/config",
-			ReadOnly:  true,
-		},
 		{
 			Name:      "ssh-key-volume",
 			MountPath: "/etc/ssh-key",
