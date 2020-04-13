@@ -4,5 +4,5 @@ RUN yum -y update && \
 yum -y install iptables openssh-clients iproute tcpdump && \
 yum clean all
 
-COPY forwarder /
+COPY bin/forwarder /
 CMD /forwarder
