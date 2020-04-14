@@ -10,6 +10,7 @@ import (
 	v1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
 	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
 	"github.com/mkimuram/k8s-ext-connector/pkg/util"
+	"golang.org/x/crypto/ssh"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -22,122 +23,118 @@ func init() {
 	flag.Parse()
 }
 
-func getExistingTunnel(options string) (map[string]string, error) {
-	ret := map[string]string{}
-	// Get sshd process
-	// Expected output format is:
-	//   {pid} {args}...
-	// ex)
-	//   2149231 ssh -o StrictHostKeyChecking=no -i /etc/ssh-key/id_rsa -f -N -R 192.168.122.201:2049:10.96.218.78:80 192.168.122.201
-	//   2747420 ssh -o StrictHostKeyChecking=no -i /etc/ssh-key/id_rsa -g -f -N -L 2049:192.168.122.140:8000 192.168.122.201
-	cmd := exec.Command("ps", "-C", "ssh", "-o", "pid,args", "--no-headers")
-	out, err := cmd.Output()
-	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			// ps command will return exit code 1 if no process found,
-			// so return error only when it returns other than 1
-			if exitError.ExitCode() != 1 {
-				return ret, fmt.Errorf("failed to get ssh process: %v", err)
-			}
-		}
-	}
-
-	// Get only pids that has {options} in arguments, and put them to map
-	// {options} will be "-g -f -N -L" or "-f -N -R"
-	for _, s := range strings.Split(string(out), "\n") {
-		if !strings.Contains(s, options) {
-			// Skip unmatched line
-			continue
-		}
-		fields := strings.Fields(s)
-		// fields needs to be longer than 2, to access to fields[len(fields)-2] below
-		if len(fields) < 2 {
-			glog.Warningf("invalid process string %q: %v", s, err)
-			continue
-		}
-		// pid should be "2747420" in above case, if {options} is "-g -f -N -L"
-		pid := fields[0]
-		// args should be "2049:192.168.122.140:8000 192.168.122.201" in above case
-		// if {options} is "-g -f -N -L"
-		args := fmt.Sprintf("%s %s", fields[len(fields)-2], fields[len(fields)-1])
-		ret[args] = pid
-	}
-
-	return ret, nil
+type Forwarder struct {
+	clientset     *clv1alpha1.SubmarinerV1alpha1Client
+	namespace     string
+	tunnels       map[string]*util.Tunnel
+	remoteTunnels map[string]*util.Tunnel
+	config        *ssh.ClientConfig
 }
 
-func deleteUnusedTunnel(expected []string, options string) error {
-	expectedMap := map[string]bool{}
-	for _, val := range expected {
-		expectedMap[val] = true
+func NewForwarder(cl *clv1alpha1.SubmarinerV1alpha1Client, ns string) *Forwarder {
+	// TODO: Create clientconfig properly
+	user := "root"
+	password := "password"
+	return &Forwarder{
+		clientset:     cl,
+		namespace:     ns,
+		tunnels:       map[string]*util.Tunnel{},
+		remoteTunnels: map[string]*util.Tunnel{},
+		config: &ssh.ClientConfig{
+			User: user,
+			Auth: []ssh.AuthMethod{
+				ssh.Password(password),
+			},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		},
+	}
+}
+
+func (f *Forwarder) toTunnel(tun string) *util.Tunnel {
+	s := strings.Split(tun, ":")
+	local := fmt.Sprintf("%s:%s", s[0], s[1])
+	server := fmt.Sprintf("%s:%s", s[2], s[3])
+	remote := fmt.Sprintf("%s:%s", s[4], s[5])
+
+	return util.NewTunnel(local, server, remote, f.config)
+}
+
+func (f *Forwarder) deleteUnusedSSHTunnel(expected map[string]bool) {
+	deleted := []string{}
+	for k, tunnel := range f.tunnels {
+		if _, ok := expected[k]; !ok {
+			glog.Infof("delete ssh tunnel for: %v", k)
+			tunnel.Cancel()
+			deleted = append(deleted, k)
+		}
 	}
 
-	existing, err := getExistingTunnel(options)
-	if err != nil {
-		return err
+	for _, d := range deleted {
+		delete(f.tunnels, d)
 	}
+}
 
-	for tun, pid := range existing {
-		if _, ok := expectedMap[tun]; ok {
-			// Existing tunnel is expected, no need to delete this tunnel
+func (f *Forwarder) ensureSSHTunnel(expected map[string]bool) {
+	created := map[string]*util.Tunnel{}
+	for k, _ := range expected {
+		if _, ok := f.tunnels[k]; ok {
+			// Already exists, skip creating tunnel
 			continue
 		}
-		// delete unused tunnel
-		cmd := exec.Command("kill", pid)
-		if err := cmd.Run(); err != nil {
-			// TODO: handle error properly
-			glog.Errorf("failed to execute command %v: %v", cmd, err)
+		glog.Infof("create new ssh tunnel for: %v", k)
+		tunnel := f.toTunnel(k)
+		tunnel.ForwardNB()
+
+		created[k] = tunnel
+	}
+
+	for k, v := range created {
+		f.tunnels[k] = v
+	}
+}
+
+func (f *Forwarder) deleteUnusedRemoteSSHTunnel(expected map[string]bool) {
+	deleted := []string{}
+	for k, tunnel := range f.remoteTunnels {
+		if _, ok := expected[k]; !ok {
+			glog.Infof("delete remote ssh tunnel for: %v", k)
+			tunnel.Cancel()
+			deleted = append(deleted, k)
 		}
 	}
 
-	return nil
+	for _, d := range deleted {
+		delete(f.remoteTunnels, d)
+	}
 }
 
-func ensureTunnel(expected []string, options string) error {
-	existing, err := getExistingTunnel(options)
-	if err != nil {
-		return err
-	}
-
-	for _, tun := range expected {
-		if _, ok := existing[tun]; ok {
-			// Already exists, so skip creating tunnel
+func (f *Forwarder) ensureRemoteSSHTunnel(expected map[string]bool) {
+	created := map[string]*util.Tunnel{}
+	for k, _ := range expected {
+		if _, ok := f.remoteTunnels[k]; ok {
+			// Already exists, skip creating tunnel
 			continue
 		}
+		glog.Infof("create new remote ssh tunnel for: %v", k)
+		tunnel := f.toTunnel(k)
+		tunnel.RemoteForwardNB()
 
-		args := []string{"-o", "StrictHostKeyChecking=no", "-i", "/etc/ssh-key/id_rsa"}
-		optionStrs := strings.Fields(options)
-		args = append(args, optionStrs...)
-		tunStrs := strings.Fields(tun)
-		if len(tunStrs) == 0 {
-			// Skip empty rule
-			continue
-		}
-		args = append(args, tunStrs...)
-		cmd := exec.Command("ssh", args...)
-		if err := cmd.Start(); err != nil {
-			// TODO: handle error properly
-			glog.Errorf("failed to execute command %v: %v", cmd, err)
-		}
+		created[k] = tunnel
 	}
 
-	return nil
-}
-
-func updateTunnel(expected []string, options string) error {
-	if err := deleteUnusedTunnel(expected, options); err != nil {
-		return err
+	for k, v := range created {
+		f.remoteTunnels[k] = v
 	}
-
-	return ensureTunnel(expected, options)
 }
 
-func updateSSHTunnel(expected []string) error {
-	return updateTunnel(expected, "-g -f -N -L" /* options */)
+func (f *Forwarder) updateSSHTunnel(expected map[string]bool) {
+	f.deleteUnusedSSHTunnel(expected)
+	f.ensureSSHTunnel(expected)
 }
 
-func updateRemoteSSHTunnel(expected []string) error {
-	return updateTunnel(expected, "-f -N -R" /* options */)
+func (f *Forwarder) updateRemoteSSHTunnel(expected map[string]bool) {
+	f.deleteUnusedRemoteSSHTunnel(expected)
+	f.ensureRemoteSSHTunnel(expected)
 }
 
 func updateIptablesRule(expected []string) error {
@@ -168,30 +165,29 @@ func updateIptablesRule(expected []string) error {
 	return nil
 }
 
-func getExpectedSSHTunnel(fwd *v1alpha1.Forwarder) []string {
-	st := []string{}
+func getExpectedSSHTunnel(fwd *v1alpha1.Forwarder) map[string]bool {
+	st := map[string]bool{}
 	// Format fwd.Spec.EgressRules to
-	//   {RelayPort}:{DestinationIp}:{DestinationPort} {GatewayIP}
+	// {ForwarderIP}:{RelayPort}:{GatewayIP}:22:{DestinationIp}:{DestinationPort}
+	// TODO: make 22 a variable
 	// ex)
-	//   "2049:192.168.122.140:8000 192.168.122.201"
+	//   "10.0.0.2:2049:192.168.122.201:22:192.168.122.140:8000"
 	for _, rule := range fwd.Spec.EgressRules {
-		st = append(st, fmt.Sprintf("%s:%s:%s %s", rule.RelayPort, rule.DestinationIP, rule.DestinationPort, rule.GatewayIP))
+		st[fmt.Sprintf("%s:%s:%s:%s:%s:%s", fwd.Spec.ForwarderIP, rule.RelayPort, rule.GatewayIP, "22", rule.DestinationIP, rule.DestinationPort)] = true
 	}
 
 	return st
 }
 
-func getExpectedRemoteSSHTunnel(fwd *v1alpha1.Forwarder) []string {
-	rt := []string{}
+func getExpectedRemoteSSHTunnel(fwd *v1alpha1.Forwarder) map[string]bool {
+	rt := map[string]bool{}
 	// Format fwd.Spec.IngressRules to
-	//   {GatewayIP}:{RelayPort}:{DestinationIp}:{DestinationPort} {GatewayIP}
+	// {DestinationIp}:{DestinationPort}:{GatewayIP}:22:{GatewayIP}:{RelayPort}
+	// TODO: make 22 a variable
 	// ex)
-	//   "192.168.122.201:2049:10.96.218.78:80 192.168.122.201"
-
-	// TODO
-
+	//   "192.168.122.201:2049:192.168.122.201:22:10.96.218.78:80"
 	for _, rule := range fwd.Spec.IngressRules {
-		rt = append(rt, fmt.Sprintf("%s:%s:%s:%s %s", rule.GatewayIP, rule.RelayPort, rule.DestinationIP, rule.DestinationPort, rule.GatewayIP))
+		rt[fmt.Sprintf("%s:%s:%s:%s:%s:%s", rule.DestinationIP, rule.DestinationPort, rule.GatewayIP, "22", rule.GatewayIP, rule.RelayPort)] = true
 	}
 
 	return rt
@@ -214,10 +210,10 @@ func getExpectedIptablesRule(fwd *v1alpha1.Forwarder) []string {
 	return it
 }
 
-func action(cl *clv1alpha1.SubmarinerV1alpha1Client, ns string, fwd *v1alpha1.Forwarder) error {
+func (f *Forwarder) action(fwd *v1alpha1.Forwarder) error {
 	var err error
 	if fwd.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionTrue)) {
-		fwd, err = cl.Forwarders(ns).UpdateStatus(fwd)
+		fwd, err = f.clientset.Forwarders(f.namespace).UpdateStatus(fwd)
 		if err != nil {
 			return err
 		}
@@ -226,17 +222,11 @@ func action(cl *clv1alpha1.SubmarinerV1alpha1Client, ns string, fwd *v1alpha1.Fo
 
 	st := getExpectedSSHTunnel(fwd)
 	glog.Infof("ExpectedSSHTunnel: %v", st)
-	if err := updateSSHTunnel(st); err != nil {
-		glog.Errorf("failed to update ssh tunnel: %v", err)
-		return err
-	}
+	f.updateSSHTunnel(st)
 
 	rt := getExpectedRemoteSSHTunnel(fwd)
 	glog.Infof("ExpectedRemoteSSHTunnel: %v", rt)
-	if err := updateRemoteSSHTunnel(rt); err != nil {
-		glog.Errorf("failed to update remote ssh tunnel: %v", err)
-		return err
-	}
+	f.updateRemoteSSHTunnel(rt)
 
 	it := getExpectedIptablesRule(fwd)
 	glog.Infof("ExpectedIptablesRule: %v", it)
@@ -247,7 +237,7 @@ func action(cl *clv1alpha1.SubmarinerV1alpha1Client, ns string, fwd *v1alpha1.Fo
 
 	if fwd.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionFalse)) {
 		fwd.Status.SyncGeneration = fwd.Status.RuleGeneration
-		fwd, err = cl.Forwarders(ns).UpdateStatus(fwd)
+		fwd, err = f.clientset.Forwarders(f.namespace).UpdateStatus(fwd)
 		if err != nil {
 			return err
 		}
@@ -278,6 +268,7 @@ func main() {
 		panic(err.Error())
 	}
 	go func() {
+		f := NewForwarder(clientset, ns)
 		for event := range watch.ResultChan() {
 			glog.Errorf("Type: %v", event.Type)
 			fwd, ok := event.Object.(*v1alpha1.Forwarder)
@@ -290,13 +281,10 @@ func main() {
 			if fwd.Status.RuleGeneration != fwd.Status.SyncGeneration &&
 				!fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleSyncing) &&
 				fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating) {
-				action(clientset, ns, fwd)
+				f.action(fwd)
 			}
 		}
 	}()
-
-	// TODO: Add codes to occasionally check the current status really synced,
-	//       because network errors or gateway changes might make it out of sync.
 
 	// Wait forever
 	select {}
