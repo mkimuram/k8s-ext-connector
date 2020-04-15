@@ -210,16 +210,40 @@ func getExpectedIptablesRule(fwd *v1alpha1.Forwarder) []string {
 	return it
 }
 
-func (f *Forwarder) action(fwd *v1alpha1.Forwarder) error {
+func needSync(fwd *v1alpha1.Forwarder) bool {
+	// Sync is needed if
+	// - generations are different between rule and sync &&
+	// - rule is not updating
+	return fwd.Status.RuleGeneration != fwd.Status.SyncGeneration &&
+		fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating)
+}
+
+func setSyncing(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, fwd *v1alpha1.Forwarder) error {
 	var err error
 	if fwd.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionTrue)) {
-		fwd, err = f.clientset.Forwarders(f.namespace).UpdateStatus(fwd)
+		fwd, err = clientset.Forwarders(ns).UpdateStatus(fwd)
 		if err != nil {
 			return err
 		}
 		glog.Infof("Update RuleSyncingCondition to true")
 	}
+	return nil
+}
 
+func setSynced(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, fwd *v1alpha1.Forwarder) error {
+	var err error
+	if fwd.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionFalse)) {
+		fwd.Status.SyncGeneration = fwd.Status.RuleGeneration
+		fwd, err = clientset.Forwarders(ns).UpdateStatus(fwd)
+		if err != nil {
+			return err
+		}
+		glog.Infof("Update RuleSyncingCondition to false")
+	}
+	return nil
+}
+
+func (f *Forwarder) SyncRule(fwd *v1alpha1.Forwarder) error {
 	st := getExpectedSSHTunnel(fwd)
 	glog.Infof("ExpectedSSHTunnel: %v", st)
 	f.updateSSHTunnel(st)
@@ -233,15 +257,6 @@ func (f *Forwarder) action(fwd *v1alpha1.Forwarder) error {
 	if err := updateIptablesRule(it); err != nil {
 		glog.Errorf("failed to update iptables rule: %v", err)
 		return err
-	}
-
-	if fwd.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionFalse)) {
-		fwd.Status.SyncGeneration = fwd.Status.RuleGeneration
-		fwd, err = f.clientset.Forwarders(f.namespace).UpdateStatus(fwd)
-		if err != nil {
-			return err
-		}
-		glog.Infof("Update RuleSyncingCondition to false")
 	}
 
 	return nil
@@ -276,12 +291,19 @@ func main() {
 				glog.Errorf("Not a forwarder: %v", event.Object)
 				continue
 			}
-			// Generations are different between rule and sync &&
-			// rule is not syncing  && updating == false means, we need to take action
-			if fwd.Status.RuleGeneration != fwd.Status.SyncGeneration &&
-				!fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleSyncing) &&
-				fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating) {
-				f.action(fwd)
+			if needSync(fwd) {
+				if err := setSyncing(clientset, ns, fwd); err != nil {
+					// TODO: requeue the event
+					continue
+				}
+				if err := f.SyncRule(fwd); err != nil {
+					// TODO: requeue the event
+					continue
+				}
+				if err := setSynced(clientset, ns, fwd); err != nil {
+					// TODO: requeue the event
+					continue
+				}
 			}
 		}
 	}()
