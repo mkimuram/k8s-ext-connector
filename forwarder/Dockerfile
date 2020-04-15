@@ -1,8 +1,8 @@
-FROM centos:7
+FROM registry.access.redhat.com/ubi8/ubi-minimal:latest
 
-RUN yum -y update && \
-yum -y install iptables openssh-clients iproute tcpdump && \
-yum clean all
+RUN microdnf install -y iptables iproute        && \
+    microdnf update -y && rm -rf /var/cache/yum && \
+	microdnf clean all
 
 COPY bin/forwarder /
 CMD /forwarder
