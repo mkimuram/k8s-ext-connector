@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -17,10 +18,21 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+var (
+	ns   string
+	name string
+)
+
 func init() {
 	flag.Set("logtostderr", "true")
 	flag.Set("stderrthreshold", "INFO")
 	flag.Parse()
+	ns = os.Getenv("FORWARDER_NAMESPACE")
+	name = os.Getenv("FORWARDER_NAME")
+
+	if ns == "" || name == "" {
+		glog.Fatalf("FORWARDER_NAMESPACE and FORWARDER_NAME need to be defined as environment variables")
+	}
 }
 
 type Forwarder struct {
@@ -274,8 +286,6 @@ func main() {
 		panic(err.Error())
 	}
 
-	ns := "external-services"
-	name := "my-externalservice"
 	opts := metav1.ListOptions{FieldSelector: fmt.Sprintf("metadata.name=%s", name)}
 
 	watch, err := clientset.Forwarders(ns).Watch(opts)

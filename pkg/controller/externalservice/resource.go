@@ -18,7 +18,7 @@ func genForwardPodSpec(cr *submarinerv1alpha1.ExternalService) *corev1.Pod {
 	env := []corev1.EnvVar{
 		{
 			Name:  "FORWARDER_NAMESPACE",
-			Value: cr.Namespace,
+			Value: ConnectorNamespace,
 		},
 		{
 			Name:  "FORWARDER_NAME",
