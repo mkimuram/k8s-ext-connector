@@ -47,6 +47,39 @@ func NewGateway(clientset *clv1alpha1.SubmarinerV1alpha1Client,
 	}
 }
 
+func needSync(gw *v1alpha1.Gateway) bool {
+	// Sync is needed if
+	// - generations are different between rule and sync &&
+	// - rule is not updating
+	return gw.Status.RuleGeneration != gw.Status.SyncGeneration &&
+		gw.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating)
+}
+
+func setSyncing(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, gw *v1alpha1.Gateway) error {
+	var err error
+	if gw.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionTrue)) {
+		gw, err = clientset.Gateways(ns).UpdateStatus(gw)
+		if err != nil {
+			return err
+		}
+		glog.Infof("Update RuleSyncingCondition to true")
+	}
+	return nil
+}
+
+func setSynced(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, gw *v1alpha1.Gateway) error {
+	var err error
+	if gw.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionFalse)) {
+		gw.Status.SyncGeneration = gw.Status.RuleGeneration
+		gw, err = clientset.Gateways(ns).UpdateStatus(gw)
+		if err != nil {
+			return err
+		}
+		glog.Infof("Update RuleSyncingCondition to false")
+	}
+	return nil
+}
+
 // Reconcile reconciles the gateway configuration to the desired state
 func (g *Gateway) Reconcile() {
 	opts := metav1.ListOptions{}
@@ -62,12 +95,21 @@ func (g *Gateway) Reconcile() {
 				glog.Errorf("Not a forwarder: %v", event.Object)
 				continue
 			}
-			// Generations are different between rule and sync &&
-			// rule is not syncing  && updating == false means, we need to take action
-			if gw.Status.RuleGeneration != gw.Status.SyncGeneration &&
-				!gw.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleSyncing) &&
-				gw.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating) {
-				g.action(gw)
+			if needSync(gw) {
+				if err := setSyncing(g.clientset, g.configNamespace, gw); err != nil {
+					// TODO: requeue the event
+					continue
+				}
+
+				if err := g.SyncRule(gw); err != nil {
+					// TODO: requeue the event
+					continue
+				}
+
+				if err := setSynced(g.clientset, g.configNamespace, gw); err != nil {
+					// TODO: requeue the event
+					continue
+				}
 			}
 		}
 	}()
@@ -76,31 +118,13 @@ func (g *Gateway) Reconcile() {
 	select {}
 }
 
-func (g *Gateway) action(gw *v1alpha1.Gateway) error {
-	var err error
-	if gw.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionTrue)) {
-		gw, err = g.clientset.Gateways(g.configNamespace).UpdateStatus(gw)
-		if err != nil {
-			return err
-		}
-		glog.Infof("Update RuleSyncingCondition to true")
-	}
-
+func (g *Gateway) SyncRule(gw *v1alpha1.Gateway) error {
 	if err := g.setupIP(gw.Spec.GatewayIP); err != nil {
 		return err
 	}
 	// Apply iptables rules for gw
 	if err := g.applyIptablesRules(gw); err != nil {
 		return err
-	}
-
-	if gw.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionFalse)) {
-		gw.Status.SyncGeneration = gw.Status.RuleGeneration
-		gw, err = g.clientset.Gateways(g.configNamespace).UpdateStatus(gw)
-		if err != nil {
-			return err
-		}
-		glog.Infof("Update RuleSyncingCondition to false")
 	}
 
 	return nil
