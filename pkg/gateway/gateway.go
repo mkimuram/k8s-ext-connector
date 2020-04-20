@@ -2,9 +2,6 @@ package gateway
 
 import (
 	"context"
-	"fmt"
-	"os/exec"
-	"strings"
 
 	backoffv4 "github.com/cenkalti/backoff/v4"
 	"github.com/golang/glog"
@@ -13,6 +10,11 @@ import (
 	"github.com/mkimuram/k8s-ext-connector/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+const (
+	prechainPrefix  = "pre"
+	postchainPrefix = "pst"
 )
 
 // Gateway represents all information to configure a gateway
@@ -85,6 +87,7 @@ func (g *Gateway) Reconcile() {
 			}
 
 			if err := g.SyncRule(gw); err != nil {
+				glog.Errorf("failed to sync rule: %v", err)
 				// TODO: requeue the event
 				continue
 			}
@@ -139,44 +142,53 @@ func (g *Gateway) ensureSshdRunning(ip string) error {
 	return nil
 }
 
-func getExpectedIptablesRule(gw *v1alpha1.Gateway) []string {
-	it := []string{}
-	// Format gw.Spec.IngressRules to
-	//   PREROUTING -t nat -m tcp -p tcp --dst {GatewayIP} --src {SourceIP} --dport {TargetPort} -j DNAT --to-destination {GatewayIp}:{RelayPort}
-	//   POSTROUTING -t nat -m tcp -p tcp --dst {DestinationIP} --dport {RelayPort} -j SNAT --to-source {GatewayIP}
-	// ex)
-	//    PREROUTING -t nat -m tcp -p tcp --dst 192.168.122.200 --src 192.168.122.140 --dport 80 -j DNAT --to-destination 192.168.122.200:2049
-	//    POSTROUTING -t nat -m tcp -p tcp --dst 192.168.122.140 --dport 2049 -j SNAT --to-source 192.168.122.200
-	// TODO: Also handle UDP properly
-	for _, rule := range gw.Spec.EgressRules {
-		it = append(it, fmt.Sprintf("PREROUTING -t nat -m tcp -p tcp --dst %s --src %s --dport %s -j DNAT --to-destination %s:%s\n", gw.Spec.GatewayIP, rule.SourceIP, rule.TargetPort, gw.Spec.GatewayIP, rule.RelayPort))
-		it = append(it, fmt.Sprintf("POSTROUTING -t nat -m tcp -p tcp --dst %s --dport %s -j SNAT --to-source %s\n", rule.DestinationIP, rule.RelayPort, gw.Spec.GatewayIP))
+func getExpectedIptablesRule(gw *v1alpha1.Gateway) (map[string][][]string, map[string][][]string, error) {
+	hexIP, err := util.GetHexIP(gw.Spec.GatewayIP)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return it
+	preChain := prechainPrefix + hexIP
+	postChain := postchainPrefix + hexIP
+	jumpChains := map[string][][]string{
+		util.ChainPrerouting:  [][]string{[]string{"-j", preChain}},
+		util.ChainPostrouting: [][]string{[]string{"-j", postChain}},
+	}
+	chains := map[string][][]string{
+		preChain:  [][]string{},
+		postChain: [][]string{},
+	}
+	// Format gw.Spec.IngressRules to
+	//   PREROUTING:
+	//     -m tcp -p tcp --dst {GatewayIP} --src {SourceIP} --dport {TargetPort} -j DNAT --to-destination {GatewayIp}:{RelayPort}
+	//   POSTROUTING:
+	//     -m tcp -p tcp --dst {DestinationIP} --dport {RelayPort} -j SNAT --to-source {GatewayIP}
+	// ex)
+	//   PREROUTING:
+	//     -m tcp -p tcp --dst 192.168.122.200 --src 192.168.122.140 --dport 80 -j DNAT --to-destination 192.168.122.200:2049
+	//   POSTROUTING:
+	//     -m tcp -p tcp --dst 192.168.122.140 --dport 2049 -j SNAT --to-source 192.168.122.200
+	// TODO: Also handle UDP properly
+	for _, rule := range gw.Spec.IngressRules {
+		chains[preChain] = append(chains[preChain], util.DNATRuleSpec(gw.Spec.GatewayIP, rule.SourceIP, rule.TargetPort, gw.Spec.GatewayIP, rule.RelayPort))
+		chains[postChain] = append(chains[postChain], util.SNATRuleSpec(rule.DestinationIP, gw.Spec.GatewayIP, rule.RelayPort))
+	}
+
+	return jumpChains, chains, nil
 }
 
 func (g *Gateway) applyIptablesRules(gw *v1alpha1.Gateway) error {
-	// TODO: Clear unused existing iptables rules
-	// Apply all iptables rules
-	errStr := ""
-	for _, rule := range getExpectedIptablesRule(gw) {
-		args := []string{"-A"}
-		ruleStrs := strings.Fields(rule)
-		if len(ruleStrs) == 0 {
-			// Skip empty rule
-			continue
-		}
-		args = append(args, ruleStrs...)
-		cmd := exec.Command("iptables", args...)
-		if err := cmd.Run(); err != nil {
-			// Append error and continue
-			errStr = errStr + fmt.Sprintf("failed to apply iptables rule %q: %v, ", rule, err)
-		}
+	jumpChains, chains, err := getExpectedIptablesRule(gw)
+	if err != nil {
+		return err
 	}
 
-	if errStr != "" {
-		return fmt.Errorf("applyIptablesRules: %q", errStr)
+	if err := util.ReplaceChains(util.TableNAT, chains); err != nil {
+		return err
+	}
+
+	if err := util.AddChains(util.TableNAT, jumpChains); err != nil {
+		return err
 	}
 
 	return nil

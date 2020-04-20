@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/coreos/go-iptables/iptables"
 	"github.com/golang/glog"
 	v1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
 	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
@@ -150,25 +149,7 @@ func (f *Forwarder) updateRemoteSSHTunnel(expected map[string]bool) {
 }
 
 func updateIptablesRule(expected map[string][][]string) error {
-	ipt, err := iptables.New()
-	if err != nil {
-		return err
-	}
-
-	// Apply all rules
-	for chain, rules := range expected {
-		// Flash existing nat rules
-		if err := ipt.ClearChain(util.TableNAT, chain); err != nil {
-			return err
-		}
-		for _, rule := range rules {
-			if err := ipt.AppendUnique(util.TableNAT, chain, rule...); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
+	return util.ReplaceChains(util.TableNAT, expected)
 }
 
 func getExpectedSSHTunnel(fwd *v1alpha1.Forwarder) map[string]bool {
@@ -213,7 +194,7 @@ func getExpectedIptablesRule(fwd *v1alpha1.Forwarder) map[string][][]string {
 	//     "-m tcp -p tcp --dst 192.168.122.139 --dport 2049 -j SNAT --to-source 10.244.0.34"
 	// TODO: Also handle UDP properly
 	for _, rule := range fwd.Spec.EgressRules {
-		it[util.ChainPrerouting] = append(it[util.ChainPrerouting], util.DNATRuleSpec(fwd.Spec.ForwarderIP, rule.RelayPort, rule.SourceIP, rule.TargetPort))
+		it[util.ChainPrerouting] = append(it[util.ChainPrerouting], util.DNATRuleSpec(fwd.Spec.ForwarderIP, rule.SourceIP, rule.TargetPort, fwd.Spec.ForwarderIP, rule.RelayPort))
 		it[util.ChainPostrouting] = append(it[util.ChainPostrouting], util.SNATRuleSpec(rule.DestinationIP, fwd.Spec.ForwarderIP, rule.RelayPort))
 	}
 
