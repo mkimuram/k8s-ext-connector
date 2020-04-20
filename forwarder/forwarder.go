@@ -185,7 +185,7 @@ func getExpectedSSHTunnel(fwd *v1alpha1.Forwarder) map[string]bool {
 	// ex)
 	//   "10.0.0.2:2049:192.168.122.201:22:192.168.122.140:8000"
 	for _, rule := range fwd.Spec.EgressRules {
-		st[fmt.Sprintf("%s:%s:%s:%s:%s:%s", fwd.Spec.ForwarderIP, rule.RelayPort, rule.GatewayIP, "22", rule.DestinationIP, rule.DestinationPort)] = true
+		st[fmt.Sprintf("%s:%s:%s:%s:%s:%s", fwd.Spec.ForwarderIP, rule.RelayPort, rule.GatewayIP, util.SSHPort, rule.DestinationIP, rule.DestinationPort)] = true
 	}
 
 	return st
@@ -199,7 +199,7 @@ func getExpectedRemoteSSHTunnel(fwd *v1alpha1.Forwarder) map[string]bool {
 	// ex)
 	//   "192.168.122.201:2049:192.168.122.201:22:10.96.218.78:80"
 	for _, rule := range fwd.Spec.IngressRules {
-		rt[fmt.Sprintf("%s:%s:%s:%s:%s:%s", rule.DestinationIP, rule.DestinationPort, rule.GatewayIP, "22", rule.GatewayIP, rule.RelayPort)] = true
+		rt[fmt.Sprintf("%s:%s:%s:%s:%s:%s", rule.DestinationIP, rule.DestinationPort, rule.GatewayIP, util.SSHPort, rule.GatewayIP, rule.RelayPort)] = true
 	}
 
 	return rt

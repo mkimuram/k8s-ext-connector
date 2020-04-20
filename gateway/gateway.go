@@ -15,13 +15,9 @@ import (
 )
 
 var (
-	kubeconfig      *string
-	clientset       *clv1alpha1.SubmarinerV1alpha1Client
-	nic             = flag.String("nic", "eth0", "Name of the nic for parent device of the macvlan device.")
-	netmask         = flag.String("netmask", "24", "Netmask for the gateway in numerical format.")
-	defaultGW       = flag.String("defaultGW", "192.168.122.1", "Default gateway for the device.")
-	configNamespace = flag.String("configNamespace", "external-services", "Kubernetes's namespace that configmap exists.")
-	ipConfigName    = flag.String("configName", "ips", "Name of the configmap that contains list of IPs.")
+	kubeconfig *string
+	clientset  *clv1alpha1.SubmarinerV1alpha1Client
+	namespace  = flag.String("namespace", "external-services", "Kubernetes's namespace to watch for.")
 
 	gw *gateway.Gateway
 )
@@ -43,13 +39,13 @@ func init() {
 	}
 
 	// create the clientset
-	clientset, err := clv1alpha1.NewForConfig(config)
+	clientset, err = clv1alpha1.NewForConfig(config)
 	if err != nil {
 		glog.Errorf("Failed to create client from %q: %v", *kubeconfig, err)
 		os.Exit(1)
 	}
 
-	gw = gateway.NewGateway(clientset, *nic, *netmask, *defaultGW, *configNamespace, *ipConfigName)
+	gw = gateway.NewGateway(clientset, *namespace)
 }
 
 func main() {

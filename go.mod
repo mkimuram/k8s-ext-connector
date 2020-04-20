@@ -3,8 +3,10 @@ module github.com/mkimuram/k8s-ext-connector
 go 1.13
 
 require (
+	github.com/anmitsu/go-shlex v0.0.0-20161002113705-648efa622239 // indirect
 	github.com/cenkalti/backoff/v4 v4.0.2
 	github.com/fsnotify/fsnotify v1.4.7
+	github.com/gliderlabs/ssh v0.3.0
 	github.com/go-logr/logr v0.1.0
 	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b
 	github.com/operator-framework/operator-sdk v0.16.0
