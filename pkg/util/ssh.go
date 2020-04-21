@@ -69,25 +69,8 @@ func toTCPAddr(endpoint string, portAny bool) (*net.TCPAddr, error) {
 	}, nil
 }
 
-func (t *Tunnel) doForward(lCon net.Conn, sCli *ssh.Client) {
+func (t *Tunnel) doForward(lCon, rCon net.Conn) {
 	var wg sync.WaitGroup
-	laddr, err := toTCPAddr(t.serverEndpoint, true /* portAny */)
-	if err != nil {
-		return
-	}
-
-	raddr, err := toTCPAddr(t.remoteEndpoint, false /* portAny */)
-	if err != nil {
-		return
-	}
-
-	// Use DialTCP and specify laddr to bind server's local endpoint as a source IP,
-	// instead of calling Dial without laddr
-	rCon, err := sCli.DialTCP("tcp", laddr, raddr)
-	if err != nil {
-		glog.Errorf("connecting to remote endopoint %q failed: %v", t.remoteEndpoint, err)
-		return
-	}
 	defer rCon.Close()
 
 	copyCon := func(in, out net.Conn) {
@@ -130,13 +113,31 @@ func (t *Tunnel) Forward() error {
 		case <-t.context.Done():
 			break
 		default:
-
 			lCon, err := lnr.Accept()
 			if err != nil {
 				glog.Errorf("accepting on local endopoint %q failed: %v", t.localEndpoint, err)
 				return err
 			}
-			go t.doForward(lCon, sCli)
+
+			laddr, err := toTCPAddr(t.serverEndpoint, true /* portAny */)
+			if err != nil {
+				return err
+			}
+
+			raddr, err := toTCPAddr(t.remoteEndpoint, false /* portAny */)
+			if err != nil {
+				return err
+			}
+
+			// Use DialTCP and specify laddr to bind server's local endpoint as a source IP,
+			// instead of calling Dial without laddr
+			rCon, err := sCli.DialTCP("tcp", laddr, raddr)
+			if err != nil {
+				glog.Errorf("connecting to remote endopoint %q failed: %v", t.remoteEndpoint, err)
+				return err
+			}
+
+			go t.doForward(lCon, rCon)
 		}
 	}
 
@@ -151,14 +152,8 @@ func (t *Tunnel) ForwardNB() {
 		t.backoff)
 }
 
-func (t *Tunnel) doRemoteForward(rCon net.Conn) {
+func (t *Tunnel) doRemoteForward(rCon, lCon net.Conn) {
 	var wg sync.WaitGroup
-
-	lCon, err := net.Dial("tcp", t.localEndpoint)
-	if err != nil {
-		glog.Errorf("connecting to local endopoint %q failed: %v", t.localEndpoint, err)
-		return
-	}
 	defer lCon.Close()
 
 	copyCon := func(in, out net.Conn) {
@@ -208,7 +203,14 @@ func (t *Tunnel) RemoteForward() error {
 				glog.Errorf("accepting on remote endopoint %q failed: %v", t.remoteEndpoint, err)
 				return err
 			}
-			t.doRemoteForward(rCon)
+
+			lCon, err := net.Dial("tcp", t.localEndpoint)
+			if err != nil {
+				glog.Errorf("connecting to local endopoint %q failed: %v", t.localEndpoint, err)
+				return err
+			}
+
+			go t.doRemoteForward(rCon, lCon)
 		}
 	}
 
