@@ -4,9 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
+	"github.com/coreos/go-iptables/iptables"
 	"github.com/golang/glog"
 	v1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
 	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
@@ -149,28 +149,22 @@ func (f *Forwarder) updateRemoteSSHTunnel(expected map[string]bool) {
 	f.ensureRemoteSSHTunnel(expected)
 }
 
-func updateIptablesRule(expected []string) error {
-	// Flash existing nat rules
-	cmd := exec.Command("iptables", "-t", "nat", "-F")
-	if err := cmd.Run(); err != nil {
-		glog.Errorf("failed to execute command %v: %v", cmd, err)
+func updateIptablesRule(expected map[string][][]string) error {
+	ipt, err := iptables.New()
+	if err != nil {
 		return err
 	}
 
 	// Apply all rules
-	for _, rule := range expected {
-		args := []string{"-A"}
-		ruleStrs := strings.Fields(rule)
-		if len(ruleStrs) == 0 {
-			// Skip empty rule
-			continue
+	for chain, rules := range expected {
+		// Flash existing nat rules
+		if err := ipt.ClearChain(util.TableNAT, chain); err != nil {
+			return err
 		}
-		args = append(args, ruleStrs...)
-		cmd := exec.Command("iptables", args...)
-
-		if err := cmd.Run(); err != nil {
-			// TODO: handle error properly
-			glog.Errorf("failed to execute command %v: %v", cmd, err)
+		for _, rule := range rules {
+			if err := ipt.AppendUnique(util.TableNAT, chain, rule...); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -205,18 +199,22 @@ func getExpectedRemoteSSHTunnel(fwd *v1alpha1.Forwarder) map[string]bool {
 	return rt
 }
 
-func getExpectedIptablesRule(fwd *v1alpha1.Forwarder) []string {
-	it := []string{}
+func getExpectedIptablesRule(fwd *v1alpha1.Forwarder) map[string][][]string {
+	it := map[string][][]string{util.ChainPrerouting: [][]string{}, util.ChainPostrouting: [][]string{}}
 	// Format fwd.Spec.EgressRules to
-	//   PREROUTING -t nat -m tcp -p tcp --dst {ForwarderIP} --src {SourceIP} --dport {TargetPort} -j DNAT --to-destination {ForwarderIp}:{RelayPort}
-	//   POSTROUTING -t nat -m tcp -p tcp --dst {DestinationIP} --dport {RelayPort} -j SNAT --to-source {ForwarderIP}
+	//   PREROUTING:
+	//     -m tcp -p tcp --dst {ForwarderIP} --src {SourceIP} --dport {TargetPort} -j DNAT --to-destination {ForwarderIp}:{RelayPort}
+	//   POSTROUTING:
+	//     -m tcp -p tcp --dst {DestinationIP} --dport {RelayPort} -j SNAT --to-source {ForwarderIP}
 	// ex)
-	//   "PREROUTING -t nat -m tcp -p tcp --dst 10.244.0.34 --src 10.244.0.11 --dport 8000 -j DNAT --to-destination 10.244.0.34:2049"
-	//   "POSTROUTING -t nat -m tcp -p tcp --dst 192.168.122.139 --dport 2049 -j SNAT --to-source 10.244.0.34"
+	//   PREROUTING:
+	//     "-m tcp -p tcp --dst 10.244.0.34 --src 10.244.0.11 --dport 8000 -j DNAT --to-destination 10.244.0.34:2049"
+	//   POSTROUTING:
+	//     "-m tcp -p tcp --dst 192.168.122.139 --dport 2049 -j SNAT --to-source 10.244.0.34"
 	// TODO: Also handle UDP properly
 	for _, rule := range fwd.Spec.EgressRules {
-		it = append(it, fmt.Sprintf("PREROUTING -t nat -m tcp -p tcp --dst %s --src %s --dport %s -j DNAT --to-destination %s:%s\n", fwd.Spec.ForwarderIP, rule.SourceIP, rule.TargetPort, fwd.Spec.ForwarderIP, rule.RelayPort))
-		it = append(it, fmt.Sprintf("POSTROUTING -t nat -m tcp -p tcp --dst %s --dport %s -j SNAT --to-source %s\n", rule.DestinationIP, rule.RelayPort, fwd.Spec.ForwarderIP))
+		it[util.ChainPrerouting] = append(it[util.ChainPrerouting], util.DNATRuleSpec(fwd.Spec.ForwarderIP, rule.RelayPort, rule.SourceIP, rule.TargetPort))
+		it[util.ChainPostrouting] = append(it[util.ChainPostrouting], util.SNATRuleSpec(rule.DestinationIP, fwd.Spec.ForwarderIP, rule.RelayPort))
 	}
 
 	return it

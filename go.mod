@@ -5,6 +5,7 @@ go 1.13
 require (
 	github.com/anmitsu/go-shlex v0.0.0-20161002113705-648efa622239 // indirect
 	github.com/cenkalti/backoff/v4 v4.0.2
+	github.com/coreos/go-iptables v0.4.5
 	github.com/fsnotify/fsnotify v1.4.7
 	github.com/gliderlabs/ssh v0.3.0
 	github.com/go-logr/logr v0.1.0
@@ -17,6 +18,7 @@ require (
 	k8s.io/api v0.0.0
 	k8s.io/apimachinery v0.0.0
 	k8s.io/client-go v12.0.0+incompatible
+	k8s.io/kubernetes v1.16.2
 	sigs.k8s.io/controller-runtime v0.4.0
 )
 
