@@ -326,3 +326,16 @@ func NewSSHServer(addr string) glssh.Server {
 		},
 	}
 }
+
+func IsPortOpen(ip, port string) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, port), time.Second)
+	if err != nil {
+		return false
+	}
+	if conn != nil {
+		defer conn.Close()
+		return true
+	}
+
+	return false
+}

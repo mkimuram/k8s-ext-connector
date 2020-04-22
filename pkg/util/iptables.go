@@ -47,3 +47,24 @@ func appendChains(table string, expected map[string][][]string, flash bool) erro
 
 	return nil
 }
+
+func CheckChainsExist(table string, expected map[string][][]string) bool {
+	ipt, err := iptables.New()
+	if err != nil {
+		return false
+	}
+
+	for chain, rules := range expected {
+		for _, rule := range rules {
+			exists, err := ipt.Exists(table, chain, rule...)
+			if err != nil {
+				return false
+			}
+			if !exists {
+				return false
+			}
+		}
+	}
+
+	return true
+}

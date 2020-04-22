@@ -172,12 +172,20 @@ func (g *GatewayController) syncGateway(key string) error {
 		}
 
 		if err := g.syncRule(gw); err != nil {
-			glog.Errorf("failed to sync rule: %v", err)
+			glog.Errorf("failed to sync rule for %s/%s: %v", namespace, name, err)
 			return err
 		}
 
 		if err := setSynced(g.clientset, namespace, gw); err != nil {
 			return err
+		}
+	} else if needCheckSync(gw) {
+		if !g.ruleSynced(gw) {
+			glog.Errorf("rule for %s/%s is not synced any more", namespace, name)
+			// Set to syncing and return error to requeue and sync
+			if err := setSyncing(g.clientset, namespace, gw); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -186,10 +194,21 @@ func (g *GatewayController) syncGateway(key string) error {
 
 func needSync(gw *v1alpha1.Gateway) bool {
 	// Sync is needed if
-	// - generations are different between rule and sync &&
 	// - rule is not updating
-	return gw.Status.RuleGeneration != gw.Status.SyncGeneration &&
-		gw.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating)
+	// - generations are different between rule and sync || not is not synced
+	return gw.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating) &&
+		(gw.Status.RuleGeneration != gw.Status.SyncGeneration ||
+			gw.Status.Conditions.IsTrueFor(v1alpha1.ConditionRuleSyncing))
+}
+
+func needCheckSync(gw *v1alpha1.Gateway) bool {
+	// CheckSync is needed if
+	// - rule is not updating
+	// - generations are the same between rule and sync
+	// - rule is synced
+	return gw.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating) &&
+		gw.Status.RuleGeneration == gw.Status.SyncGeneration &&
+		gw.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleSyncing)
 }
 
 func setSyncing(clientset clv1alpha1.SubmarinerV1alpha1Interface, ns string, gw *v1alpha1.Gateway) error {
@@ -309,4 +328,30 @@ func (g *GatewayController) applyIptablesRules(gw *v1alpha1.Gateway) error {
 	}
 
 	return nil
+}
+
+func (g *GatewayController) ruleSynced(gw *v1alpha1.Gateway) bool {
+	return g.checkSshdRunning(gw.Spec.GatewayIP) && g.checkIptablesRulesApplied(gw)
+}
+
+func (g *GatewayController) checkSshdRunning(ip string) bool {
+	// TODO: consider more strict check?
+	// below only check that the port is open in the specified ip
+	return util.IsPortOpen(ip, util.SSHPort)
+}
+
+func (g *GatewayController) checkIptablesRulesApplied(gw *v1alpha1.Gateway) bool {
+	jumpChains, chains, err := getExpectedIptablesRule(gw)
+	if err != nil {
+		return false
+	}
+	// TODO: consider checking exact match?
+	// below only check that rules in chains do exist, so unused rules might remain
+	if !util.CheckChainsExist(util.TableNAT, chains) {
+		return false
+	}
+	if !util.CheckChainsExist(util.TableNAT, jumpChains) {
+		return false
+	}
+	return true
 }
