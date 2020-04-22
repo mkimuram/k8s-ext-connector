@@ -2,14 +2,24 @@ package gateway
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	backoffv4 "github.com/cenkalti/backoff/v4"
 	"github.com/golang/glog"
 	"github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
+	clversioned "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned"
 	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
+	sbinformers "github.com/mkimuram/k8s-ext-connector/pkg/client/informers/externalversions"
+	sblisters "github.com/mkimuram/k8s-ext-connector/pkg/client/listers/submariner/v1alpha1"
 	"github.com/mkimuram/k8s-ext-connector/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
+	"k8s.io/klog"
 )
 
 const (
@@ -17,20 +27,161 @@ const (
 	postchainPrefix = "pst"
 )
 
-// Gateway represents all information to configure a gateway
-type Gateway struct {
+// GatewayController is a cotroller for a gateway
+type GatewayController struct {
 	clientset *clv1alpha1.SubmarinerV1alpha1Client
 	namespace string
 	ssh       map[string]context.CancelFunc
+	informer  cache.SharedIndexInformer
+	lister    sblisters.GatewayLister
+	workqueue workqueue.RateLimitingInterface
 }
 
-// NewGateway returns an Gateway instance
-func NewGateway(clientset *clv1alpha1.SubmarinerV1alpha1Client, namespace string) *Gateway {
-	return &Gateway{
-		clientset: clientset,
+// NewGatewayController returns a GatewayController instance
+func NewGatewayController(cl *clv1alpha1.SubmarinerV1alpha1Client, vcl *clversioned.Clientset, namespace string) *GatewayController {
+	wq := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+
+	informerFactory := sbinformers.NewSharedInformerFactory(vcl, time.Second*30)
+	informer := informerFactory.Submariner().V1alpha1().Gateways()
+	controller := &GatewayController{
+		clientset: cl,
 		namespace: namespace,
 		ssh:       map[string]context.CancelFunc{},
+		informer:  informer.Informer(),
+		lister:    informer.Lister(),
+		workqueue: wq,
 	}
+
+	controller.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(object interface{}) {
+			if !controller.needEnqueue(object) {
+				return
+			}
+			klog.Infof("Added: %s", getKey(object))
+			controller.enqueueGateway(object)
+		},
+		UpdateFunc: func(oldObject, newObject interface{}) {
+			if !controller.needEnqueue(newObject) {
+				return
+			}
+			klog.Infof("Updated: %s", getKey(newObject))
+			controller.enqueueGateway(newObject)
+		},
+		DeleteFunc: func(object interface{}) {
+			if !controller.needEnqueue(object) {
+				return
+			}
+			klog.Infof("Deleted: %v", getKey(object))
+			controller.enqueueGateway(object)
+		},
+	})
+
+	informerFactory.Start(wait.NeverStop)
+
+	return controller
+}
+
+func (g *GatewayController) needEnqueue(obj interface{}) bool {
+	key, err := cache.MetaNamespaceKeyFunc(obj)
+	if err != nil {
+		return false
+	}
+
+	namespace, _, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		return false
+	}
+
+	return g.namespace == namespace
+}
+
+func (g *GatewayController) enqueueGateway(obj interface{}) {
+	key, err := cache.MetaNamespaceKeyFunc(obj)
+	if err != nil {
+		utilruntime.HandleError(err)
+		return
+	}
+	g.workqueue.Add(key)
+}
+
+func getKey(obj interface{}) string {
+	key, err := cache.MetaNamespaceKeyFunc(obj)
+	if err != nil {
+		return ""
+	}
+	return key
+}
+
+func (g *GatewayController) Run() {
+	defer utilruntime.HandleCrash()
+	defer g.workqueue.ShutDown()
+
+	if ok := cache.WaitForCacheSync(wait.NeverStop, g.informer.HasSynced); !ok {
+		glog.Fatalf("time out while waiting cache to be synced")
+	}
+
+	g.reconcile()
+}
+
+// reconcile reconciles the gateway configuration to the desired state
+func (g *GatewayController) reconcile() {
+	for g.processNextGateway() {
+	}
+}
+
+func (g *GatewayController) processNextGateway() bool {
+	obj, shutdown := g.workqueue.Get()
+	if shutdown {
+		return false
+	}
+
+	err := func(obj interface{}) error {
+		defer g.workqueue.Done(obj)
+		key, ok := obj.(string)
+		if !ok {
+			g.workqueue.Forget(obj)
+			utilruntime.HandleError(fmt.Errorf("invalid key is passed to workqueue"))
+			return nil
+		}
+
+		if err := g.syncGateway(key); err != nil {
+			g.workqueue.AddRateLimited(key)
+			return fmt.Errorf("error syncing %q: %v", key, err)
+		}
+		g.workqueue.Forget(obj)
+		return nil
+	}(obj)
+
+	if err != nil {
+		utilruntime.HandleError(err)
+		return true
+	}
+
+	return true
+}
+
+func (g *GatewayController) syncGateway(key string) error {
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		return err
+	}
+	gw, err := g.clientset.Gateways(namespace).Get(name, metav1.GetOptions{})
+	if needSync(gw) {
+		if err := setSyncing(g.clientset, namespace, gw); err != nil {
+			return err
+		}
+
+		if err := g.syncRule(gw); err != nil {
+			glog.Errorf("failed to sync rule: %v", err)
+			return err
+		}
+
+		if err := setSynced(g.clientset, namespace, gw); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func needSync(gw *v1alpha1.Gateway) bool {
@@ -41,7 +192,7 @@ func needSync(gw *v1alpha1.Gateway) bool {
 		gw.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating)
 }
 
-func setSyncing(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, gw *v1alpha1.Gateway) error {
+func setSyncing(clientset clv1alpha1.SubmarinerV1alpha1Interface, ns string, gw *v1alpha1.Gateway) error {
 	var err error
 	if gw.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionTrue)) {
 		gw, err = clientset.Gateways(ns).UpdateStatus(gw)
@@ -53,7 +204,7 @@ func setSyncing(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, gw *v
 	return nil
 }
 
-func setSynced(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, gw *v1alpha1.Gateway) error {
+func setSynced(clientset clv1alpha1.SubmarinerV1alpha1Interface, ns string, gw *v1alpha1.Gateway) error {
 	var err error
 	if gw.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionFalse)) {
 		gw.Status.SyncGeneration = gw.Status.RuleGeneration
@@ -66,41 +217,7 @@ func setSynced(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, gw *v1
 	return nil
 }
 
-// Reconcile reconciles the gateway configuration to the desired state
-func (g *Gateway) Reconcile() {
-	opts := metav1.ListOptions{}
-	watch, err := g.clientset.Gateways(g.namespace).Watch(opts)
-	if err != nil {
-		panic(err.Error())
-	}
-	for event := range watch.ResultChan() {
-		glog.Errorf("Type: %v", event.Type)
-		gw, ok := event.Object.(*v1alpha1.Gateway)
-		if !ok {
-			glog.Errorf("Not a gateway: %v", event.Object)
-			continue
-		}
-		if needSync(gw) {
-			if err := setSyncing(g.clientset, g.namespace, gw); err != nil {
-				// TODO: requeue the event
-				continue
-			}
-
-			if err := g.SyncRule(gw); err != nil {
-				glog.Errorf("failed to sync rule: %v", err)
-				// TODO: requeue the event
-				continue
-			}
-
-			if err := setSynced(g.clientset, g.namespace, gw); err != nil {
-				// TODO: requeue the event
-				continue
-			}
-		}
-	}
-}
-
-func (g *Gateway) SyncRule(gw *v1alpha1.Gateway) error {
+func (g *GatewayController) syncRule(gw *v1alpha1.Gateway) error {
 	if err := g.ensureSshdRunning(gw.Spec.GatewayIP); err != nil {
 		return err
 	}
@@ -112,7 +229,7 @@ func (g *Gateway) SyncRule(gw *v1alpha1.Gateway) error {
 	return nil
 }
 
-func (g *Gateway) ensureSshdRunning(ip string) error {
+func (g *GatewayController) ensureSshdRunning(ip string) error {
 	if _, ok := g.ssh[ip]; ok {
 		// Already running, skip creating new server
 		return nil
@@ -177,7 +294,7 @@ func getExpectedIptablesRule(gw *v1alpha1.Gateway) (map[string][][]string, map[s
 	return jumpChains, chains, nil
 }
 
-func (g *Gateway) applyIptablesRules(gw *v1alpha1.Gateway) error {
+func (g *GatewayController) applyIptablesRules(gw *v1alpha1.Gateway) error {
 	jumpChains, chains, err := getExpectedIptablesRule(gw)
 	if err != nil {
 		return err

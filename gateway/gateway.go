@@ -8,6 +8,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/mkimuram/k8s-ext-connector/pkg/gateway"
 
+	clversioned "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned"
 	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -16,10 +17,10 @@ import (
 
 var (
 	kubeconfig *string
-	clientset  *clv1alpha1.SubmarinerV1alpha1Client
+	cl         *clv1alpha1.SubmarinerV1alpha1Client
+	vcl        *clversioned.Clientset
 	namespace  = flag.String("namespace", "external-services", "Kubernetes's namespace to watch for.")
-
-	gw *gateway.Gateway
+	g          *gateway.GatewayController
 )
 
 func init() {
@@ -34,20 +35,23 @@ func init() {
 	// use the current context in kubeconfig
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
-		glog.Errorf("Failed to build config from %q: %v", *kubeconfig, err)
-		os.Exit(1)
+		glog.Fatalf("Failed to build config from %q: %v", *kubeconfig, err)
 	}
 
-	// create the clientset
-	clientset, err = clv1alpha1.NewForConfig(config)
+	// create clientset
+	cl, err = clv1alpha1.NewForConfig(config)
 	if err != nil {
-		glog.Errorf("Failed to create client from %q: %v", *kubeconfig, err)
-		os.Exit(1)
+		glog.Fatalf("Failed to create client from %q: %v", *kubeconfig, err)
+	}
+	// create versioned clientset
+	vcl, err = clversioned.NewForConfig(config)
+	if err != nil {
+		glog.Fatalf("Failed to create versioned client from %q: %v", *kubeconfig, err)
 	}
 
-	gw = gateway.NewGateway(clientset, *namespace)
+	g = gateway.NewGatewayController(cl, vcl, *namespace)
 }
 
 func main() {
-	gw.Reconcile()
+	g.Run()
 }
