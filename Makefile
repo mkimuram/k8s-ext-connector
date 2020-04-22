@@ -29,5 +29,5 @@ generate-client:
     -e CLIENT_GENERATOR_OUT=$(PROJECT_PACKAGE)/pkg/client \
     -e APIS_ROOT=$(PROJECT_PACKAGE)/pkg/apis \
     -e GROUPS_VERSION=$(GROUPS_VERSION) \
-    -e GENERATION_TARGETS="client" \
+    -e GENERATION_TARGETS="client,lister,informer" \
     $(CLGENIMAGE)
