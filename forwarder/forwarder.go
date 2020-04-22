@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/golang/glog"
+	clversioned "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned"
 	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
 	"github.com/mkimuram/k8s-ext-connector/pkg/forwarder"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -14,7 +15,7 @@ import (
 var (
 	namespace string
 	name      string
-	fwd       *forwarder.Forwarder
+	fwd       *forwarder.ForwarderController
 )
 
 func init() {
@@ -28,20 +29,26 @@ func init() {
 		glog.Fatalf("FORWARDER_NAMESPACE and FORWARDER_NAME need to be defined as environment variables")
 	}
 
-	// creates the in-cluster config
+	// create in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		panic(err.Error())
+		glog.Fatalf("Failed to build config: %v", err)
 	}
-	// creates the clientset
-	clientset, err := clv1alpha1.NewForConfig(config)
+	// create clientset
+	cl, err := clv1alpha1.NewForConfig(config)
 	if err != nil {
-		panic(err.Error())
+		glog.Fatalf("Failed to create client: %v", err)
 	}
 
-	fwd = forwarder.NewForwarder(clientset, namespace, name)
+	// create versioned clientset
+	vcl, err := clversioned.NewForConfig(config)
+	if err != nil {
+		glog.Fatalf("Failed to create versioned client: %v", err)
+	}
+
+	fwd = forwarder.NewForwarderController(cl, vcl, namespace, name)
 }
 
 func main() {
-	fwd.Reconcile()
+	fwd.Run()
 }
