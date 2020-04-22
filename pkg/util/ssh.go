@@ -2,11 +2,13 @@ package util
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	backoffv4 "github.com/cenkalti/backoff/v4"
 
@@ -144,12 +146,20 @@ func (t *Tunnel) Forward() error {
 	return nil
 }
 
+func (t *Tunnel) String() string {
+	return fmt.Sprintf("local: %s, server: %s, remote: %s", t.localEndpoint, t.serverEndpoint, t.remoteEndpoint)
+}
+
 func (t *Tunnel) ForwardNB() {
-	go backoffv4.Retry(
+	go backoffv4.RetryNotify(
 		func() error {
 			return t.Forward()
 		},
-		t.backoff)
+		t.backoff,
+		func(err error, tm time.Duration) {
+			glog.Errorf("failed to forward for %q in duration %v: %v", t.String(), tm, err)
+		},
+	)
 }
 
 func (t *Tunnel) doRemoteForward(rCon, lCon net.Conn) {
@@ -218,11 +228,15 @@ func (t *Tunnel) RemoteForward() error {
 }
 
 func (t *Tunnel) RemoteForwardNB() {
-	go backoffv4.Retry(
+	go backoffv4.RetryNotify(
 		func() error {
 			return t.RemoteForward()
 		},
-		t.backoff)
+		t.backoff,
+		func(err error, tm time.Duration) {
+			glog.Errorf("failed to remote forward for %q in duration %v: %v", t.String(), tm, err)
+		},
+	)
 }
 
 // direct-tcpip data struct as specified in RFC4254, Section 7.2
