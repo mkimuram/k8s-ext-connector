@@ -186,6 +186,14 @@ func (f *ForwarderController) syncForwarder(key string) error {
 		if err := setSynced(f.clientset, namespace, fwd); err != nil {
 			return err
 		}
+	} else if needCheckSync(fwd) {
+		if !f.ruleSynced(fwd) {
+			glog.Errorf("rule for %s/%s is not synced any more", namespace, name)
+			// Set to syncing and return error to requeue and sync
+			if err := setSyncing(f.clientset, namespace, fwd); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -193,10 +201,21 @@ func (f *ForwarderController) syncForwarder(key string) error {
 
 func needSync(fwd *v1alpha1.Forwarder) bool {
 	// Sync is needed if
-	// - generations are different between rule and sync &&
 	// - rule is not updating
-	return fwd.Status.RuleGeneration != fwd.Status.SyncGeneration &&
-		fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating)
+	// - generations are different between rule and sync || not is not synced
+	return fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating) &&
+		(fwd.Status.RuleGeneration != fwd.Status.SyncGeneration ||
+			fwd.Status.Conditions.IsTrueFor(v1alpha1.ConditionRuleSyncing))
+}
+
+func needCheckSync(fwd *v1alpha1.Forwarder) bool {
+	// CheckSync is needed if
+	// - rule is not updating
+	// - generations are the same between rule and sync
+	// - rule is synced
+	return fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating) &&
+		fwd.Status.RuleGeneration == fwd.Status.SyncGeneration &&
+		fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleSyncing)
 }
 
 func setSyncing(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, fwd *v1alpha1.Forwarder) error {
@@ -225,17 +244,10 @@ func setSynced(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, fwd *v
 }
 
 func (f *ForwarderController) syncRule(fwd *v1alpha1.Forwarder) error {
-	st := getExpectedSSHTunnel(fwd)
-	glog.Infof("ExpectedSSHTunnel: %v", st)
-	f.updateSSHTunnel(st)
+	f.updateSSHTunnel(getExpectedSSHTunnel(fwd))
+	f.updateRemoteSSHTunnel(getExpectedRemoteSSHTunnel(fwd))
 
-	rt := getExpectedRemoteSSHTunnel(fwd)
-	glog.Infof("ExpectedRemoteSSHTunnel: %v", rt)
-	f.updateRemoteSSHTunnel(rt)
-
-	it := getExpectedIptablesRule(fwd)
-	glog.Infof("ExpectedIptablesRule: %v", it)
-	if err := updateIptablesRule(it); err != nil {
+	if err := updateIptablesRule(getExpectedIptablesRule(fwd)); err != nil {
 		glog.Errorf("failed to update iptables rule: %v", err)
 		return err
 	}
@@ -381,4 +393,41 @@ func getExpectedIptablesRule(fwd *v1alpha1.Forwarder) map[string][][]string {
 	}
 
 	return it
+}
+
+func (f *ForwarderController) ruleSynced(fwd *v1alpha1.Forwarder) bool {
+	return f.isTunnelRunning(fwd) && f.isIptablesRulesApplied(fwd)
+}
+
+func (f *ForwarderController) isTunnelRunning(fwd *v1alpha1.Forwarder) bool {
+	for k, _ := range getExpectedSSHTunnel(fwd) {
+		if _, ok := f.tunnels[k]; !ok {
+			return false
+		}
+	}
+	for k, _ := range getExpectedRemoteSSHTunnel(fwd) {
+		if _, ok := f.remoteTunnels[k]; !ok {
+			return false
+		}
+	}
+	// TODO: consider checking actual open ports like below
+	/*
+		for _, rule := range fwd.Spec.EgressRules {
+			if !util.IsPortOpen(fwd.Spec.ForwarderIP, rule.RelayPort) {
+				return false
+			}
+		}
+		for _, rule := range fwd.Spec.IngressRules {
+			if !util.IsPortOpen(rule.GatewayIP, rule.RelayPort) {
+				return false
+			}
+		}
+	*/
+	return true
+}
+
+func (f *ForwarderController) isIptablesRulesApplied(fwd *v1alpha1.Forwarder) bool {
+	// TODO: consider checking exact match?
+	// below only check that rules in chains do exist, so unused rules might remain
+	return util.CheckChainsExist(util.TableNAT, getExpectedIptablesRule(fwd))
 }
