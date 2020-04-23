@@ -574,13 +574,39 @@ func (r *ReconcileExternalService) deleteResourceForExternalService(cr *submarin
 		_ = r.client.Delete(context.Background(), svc)
 	}
 
-	// Delete configmap
-	configMap := &corev1.ConfigMap{}
-	if err := r.client.Get(context.TODO(), types.NamespacedName{Name: cr.Name, Namespace: ConnectorNamespace}, configMap); err != nil && !errors.IsNotFound(err) {
+	// Delete forwarder CR
+	fwd := &submarinerv1alpha1.Forwarder{}
+	if err := r.client.Get(context.TODO(), types.NamespacedName{Name: cr.Name, Namespace: ConnectorNamespace}, fwd); err != nil && !errors.IsNotFound(err) {
 		return err
 	} else if err == nil {
-		// Configmap exists, so delete it
-		_ = r.client.Delete(context.Background(), configMap)
+		// Forwarder exists, so delete it
+		_ = r.client.Delete(context.Background(), fwd)
+	}
+
+	// Update gateway CRs
+	// All gateways are updated here to prevent unnecessary forwarder information
+	// from remaining in gateways.
+	fwds := &submarinerv1alpha1.ForwarderList{}
+	opts := []client.ListOption{}
+	if err := r.client.List(context.TODO(), fwds, opts...); err != nil {
+		return err
+	}
+	// Ensure that the deleted forwarder no longer exists, before updating gateway CRs
+	for _, fwd := range fwds.Items {
+		if fwd.Namespace == ConnectorNamespace && fwd.Name == cr.Name {
+			return fmt.Errorf("Deleted forwader CR still exists in cache")
+		}
+	}
+
+	gws := &submarinerv1alpha1.GatewayList{}
+	if err := r.client.List(context.TODO(), gws, opts...); err != nil {
+		return err
+	}
+
+	for _, gw := range gws.Items {
+		if err := updateRulesForOneGateway(r.client, fwds, &gw, gw.Spec.GatewayIP); err != nil {
+			return err
+		}
 	}
 
 	return nil
