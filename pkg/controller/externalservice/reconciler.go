@@ -327,6 +327,9 @@ func updateForwarderRules(cl client.Client, cr *submarinerv1alpha1.ExternalServi
 	if err != nil {
 		return err
 	}
+	if fwdPod.Status.PodIP == "" {
+		return fmt.Errorf("forwarder pod has no IP address assigned")
+	}
 
 	// Generate new rules
 	ePorts := genUsedPortsForEgress(fwd)
