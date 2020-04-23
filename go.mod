@@ -6,22 +6,19 @@ require (
 	github.com/anmitsu/go-shlex v0.0.0-20161002113705-648efa622239 // indirect
 	github.com/cenkalti/backoff/v4 v4.0.2
 	github.com/coreos/go-iptables v0.4.5
-	github.com/docker/cli v0.0.0-20190506213505-d88565df0c2d
-	github.com/docker/compose-on-kubernetes v0.4.24 // indirect
-	github.com/fsnotify/fsnotify v1.4.7
 	github.com/gliderlabs/ssh v0.3.0
 	github.com/go-logr/logr v0.1.0
 	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b
+	github.com/golang/mock v1.4.3
 	github.com/operator-framework/operator-sdk v0.16.0
 	github.com/spf13/pflag v1.0.5
-	github.com/spf13/viper v1.4.0
 	golang.org/x/crypto v0.0.0-20191028145041-f83a4685e152
-	gopkg.in/yaml.v2 v2.2.4
+	golang.org/x/net v0.0.0-20200226121028-0de0cce0169b // indirect
+	golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543 // indirect
 	k8s.io/api v0.0.0
 	k8s.io/apimachinery v0.0.0
 	k8s.io/client-go v12.0.0+incompatible
 	k8s.io/klog v1.0.0
-	k8s.io/kubernetes v1.16.2
 	sigs.k8s.io/controller-runtime v0.4.0
 )
 
