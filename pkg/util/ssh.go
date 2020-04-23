@@ -96,6 +96,7 @@ func (t *Tunnel) doForward(lCon, rCon net.Conn) {
 }
 
 func (t *Tunnel) Forward() error {
+	glog.Infof("starting forward for local%q:server%q:remote%q", t.localEndpoint, t.serverEndpoint, t.remoteEndpoint)
 	sCli, err := ssh.Dial("tcp", t.serverEndpoint, t.config)
 	if err != nil {
 		glog.Errorf("connecting to server endopoint %q failed: %v", t.serverEndpoint, err)
@@ -187,7 +188,7 @@ func (t *Tunnel) doRemoteForward(rCon, lCon net.Conn) {
 }
 
 func (t *Tunnel) RemoteForward() error {
-	glog.Infof("remote forwarding for local%q:server%q:remote%q is started", t.localEndpoint, t.serverEndpoint, t.remoteEndpoint)
+	glog.Infof("starting remote forward for local%q:server%q:remote%q", t.localEndpoint, t.serverEndpoint, t.remoteEndpoint)
 
 	sCli, err := ssh.Dial("tcp", t.serverEndpoint, t.config)
 	if err != nil {
