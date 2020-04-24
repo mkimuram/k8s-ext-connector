@@ -21,8 +21,12 @@ const (
 	// SSHPort is port number to used for ssh server
 	// TODO: change this to variable
 	SSHPort = "2022"
+	// SSHTimeout is duration of timeout for ssh
+	// TODO: consider tuning timeout
+	SSHTimeout = time.Second * 5
 )
 
+// Tunnel represents ssh tunnel
 type Tunnel struct {
 	localEndpoint  string
 	serverEndpoint string
@@ -33,6 +37,7 @@ type Tunnel struct {
 	Cancel         context.CancelFunc
 }
 
+// NewTunnel returns a Tunnel instance
 func NewTunnel(local, server, remote string, config *ssh.ClientConfig) *Tunnel {
 	ctx, cf := context.WithCancel(context.Background())
 	b := backoffv4.WithContext(backoffv4.NewExponentialBackOff(), ctx)
@@ -47,6 +52,8 @@ func NewTunnel(local, server, remote string, config *ssh.ClientConfig) *Tunnel {
 	}
 }
 
+// toTCPAddr returns net.TCPAddr from specified {endpoint} and {portAny}
+// If {portAny} is true, Port is set to 0. Otherwise port will be endpoint's port.
 func toTCPAddr(endpoint string, portAny bool) (*net.TCPAddr, error) {
 	ip, port, err := net.SplitHostPort(endpoint)
 	if err != nil {
@@ -71,6 +78,8 @@ func toTCPAddr(endpoint string, portAny bool) (*net.TCPAddr, error) {
 	}, nil
 }
 
+// doForward does actual forwarding logic inside Forward
+// It bidirectionally copies local connection and remote connection.
 func (t *Tunnel) doForward(lCon, rCon net.Conn) {
 	var wg sync.WaitGroup
 	defer rCon.Close()
@@ -95,6 +104,9 @@ func (t *Tunnel) doForward(lCon, rCon net.Conn) {
 	wg.Wait()
 }
 
+// Forward implements ssh forward functionality.
+// It forwards remote endpoint to local endpoint via server endpoint where ssh forward server running.
+// Forward() can be canceled by calling Cancel().
 func (t *Tunnel) Forward() error {
 	glog.Infof("starting forward for local%q:server%q:remote%q", t.localEndpoint, t.serverEndpoint, t.remoteEndpoint)
 	sCli, err := ssh.Dial("tcp", t.serverEndpoint, t.config)
@@ -147,10 +159,15 @@ func (t *Tunnel) Forward() error {
 	return nil
 }
 
+// String returns string representation of Tunnel.
+// ex)
+//    "local: 192.168.122.100:8080, server: 192.168.122.101:2022, remote: 192.168.122.102:80"
 func (t *Tunnel) String() string {
 	return fmt.Sprintf("local: %s, server: %s, remote: %s", t.localEndpoint, t.serverEndpoint, t.remoteEndpoint)
 }
 
+// ForwardNB is non-blocking version of Forward
+// It retries with exponential backoff on failure.
 func (t *Tunnel) ForwardNB() {
 	go backoffv4.RetryNotify(
 		func() error {
@@ -163,6 +180,8 @@ func (t *Tunnel) ForwardNB() {
 	)
 }
 
+// doRemoteForward does actual remote forwarding logic inside RemoteForward
+// It bidirectionally copies local connection and remote connection.
 func (t *Tunnel) doRemoteForward(rCon, lCon net.Conn) {
 	var wg sync.WaitGroup
 	defer lCon.Close()
@@ -187,6 +206,9 @@ func (t *Tunnel) doRemoteForward(rCon, lCon net.Conn) {
 	wg.Wait()
 }
 
+// RemoteForward implements ssh remote forward functionality.
+// It forwards local endpoint to remote endpoint via server endpoint where ssh forward server running.
+// RemoteForward() can be canceled by calling Cancel().
 func (t *Tunnel) RemoteForward() error {
 	glog.Infof("starting remote forward for local%q:server%q:remote%q", t.localEndpoint, t.serverEndpoint, t.remoteEndpoint)
 
@@ -228,6 +250,8 @@ func (t *Tunnel) RemoteForward() error {
 	return nil
 }
 
+// RemoteForwardNB is non-blocking version of RemoteForward
+// It retries with exponential backoff on failure.
 func (t *Tunnel) RemoteForwardNB() {
 	go backoffv4.RetryNotify(
 		func() error {
@@ -273,6 +297,7 @@ func DirectTCPIPHandler(srv *glssh.Server, conn *ssh.ServerConn, newChan ssh.New
 	}
 	dialer := net.Dialer{
 		LocalAddr: laddr,
+		Timeout:   SSHTimeout,
 	}
 
 	dconn, err := dialer.DialContext(ctx, "tcp", dest)
@@ -300,6 +325,7 @@ func DirectTCPIPHandler(srv *glssh.Server, conn *ssh.ServerConn, newChan ssh.New
 	}()
 }
 
+// NewSSHServer returns ssh server instance that will listen on {addr}
 func NewSSHServer(addr string) glssh.Server {
 	forwardHandler := &glssh.ForwardedTCPHandler{}
 
@@ -328,6 +354,9 @@ func NewSSHServer(addr string) glssh.Server {
 	}
 }
 
+// IsPortOpen checks if ip:port is open by connecting to it
+// It returns false if there is an error connecting to it or connection is nil,
+// otherwise it returns true.
 func IsPortOpen(ip, port string) bool {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, port), time.Second)
 	if err != nil {
