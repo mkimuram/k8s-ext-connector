@@ -223,28 +223,24 @@ func TestForward(t *testing.T) {
 			msg:         "hello",
 			expectError: false,
 		},
-		// TODO: fixme, it takes about 120 sec to complete this test
-		// x/crypto/ssh: issues/21420 is related?
-		/*
-			{
-				name:       "Error case (echo server down)",
-				localAddr:  "127.0.0.1:" + genRandomPort(),
-				serverAddr: "127.0.0.1:" + genRandomPort(),
-				remoteAddr: "127.0.0.1:" + genRandomPort(),
-				// Down
-				echoDown:   true,
-				sshDown:    false,
-				tunnelDown: false,
-				config: &ssh.ClientConfig{
-					Timeout:         time.Second * 5,
-					Auth:            []ssh.AuthMethod{},
-					HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-				},
-				msg: "hello",
-				// Should return error
-				expectError: true,
+		{
+			name:       "Error case (echo server down)",
+			localAddr:  "127.0.0.1:" + genRandomPort(),
+			serverAddr: "127.0.0.1:" + genRandomPort(),
+			remoteAddr: "127.0.0.1:" + genRandomPort(),
+			// Down
+			echoDown:   true,
+			sshDown:    false,
+			tunnelDown: false,
+			config: &ssh.ClientConfig{
+				Timeout:         time.Second * 5,
+				Auth:            []ssh.AuthMethod{},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 			},
-		*/
+			msg: "hello",
+			// Should return error
+			expectError: true,
+		},
 		{
 			name:       "Error case (ssh server down)",
 			localAddr:  "127.0.0.1:" + genRandomPort(),

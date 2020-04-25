@@ -21,9 +21,6 @@ const (
 	// SSHPort is port number to used for ssh server
 	// TODO: change this to variable
 	SSHPort = "2022"
-	// SSHTimeout is duration of timeout for ssh
-	// TODO: consider tuning timeout
-	SSHTimeout = time.Second * 5
 )
 
 // Tunnel represents ssh tunnel
@@ -82,7 +79,6 @@ func toTCPAddr(endpoint string, portAny bool) (*net.TCPAddr, error) {
 // It bidirectionally copies local connection and remote connection.
 func (t *Tunnel) doForward(lCon, rCon net.Conn) {
 	var wg sync.WaitGroup
-	defer rCon.Close()
 
 	copyCon := func(in, out net.Conn) {
 		defer wg.Done()
@@ -123,6 +119,16 @@ func (t *Tunnel) Forward() error {
 	}
 	defer lnr.Close()
 
+	laddr, err := toTCPAddr(t.serverEndpoint, true /* portAny */)
+	if err != nil {
+		return err
+	}
+
+	raddr, err := toTCPAddr(t.remoteEndpoint, false /* portAny */)
+	if err != nil {
+		return err
+	}
+
 	for {
 		select {
 		case <-t.context.Done():
@@ -134,25 +140,20 @@ func (t *Tunnel) Forward() error {
 				return err
 			}
 
-			laddr, err := toTCPAddr(t.serverEndpoint, true /* portAny */)
-			if err != nil {
-				return err
-			}
-
-			raddr, err := toTCPAddr(t.remoteEndpoint, false /* portAny */)
-			if err != nil {
-				return err
-			}
-
 			// Use DialTCP and specify laddr to bind server's local endpoint as a source IP,
 			// instead of calling Dial without laddr
 			rCon, err := sCli.DialTCP("tcp", laddr, raddr)
 			if err != nil {
 				glog.Errorf("connecting to remote endopoint %q failed: %v", t.remoteEndpoint, err)
+				lCon.Close()
 				return err
 			}
 
-			go t.doForward(lCon, rCon)
+			go func() {
+				defer lCon.Close()
+				defer rCon.Close()
+				t.doForward(lCon, rCon)
+			}()
 		}
 	}
 
@@ -184,7 +185,6 @@ func (t *Tunnel) ForwardNB() {
 // It bidirectionally copies local connection and remote connection.
 func (t *Tunnel) doRemoteForward(rCon, lCon net.Conn) {
 	var wg sync.WaitGroup
-	defer lCon.Close()
 
 	copyCon := func(in, out net.Conn) {
 		defer wg.Done()
@@ -240,10 +240,15 @@ func (t *Tunnel) RemoteForward() error {
 			lCon, err := net.Dial("tcp", t.localEndpoint)
 			if err != nil {
 				glog.Errorf("connecting to local endopoint %q failed: %v", t.localEndpoint, err)
+				rCon.Close()
 				return err
 			}
 
-			go t.doRemoteForward(rCon, lCon)
+			go func() {
+				defer rCon.Close()
+				defer lCon.Close()
+				t.doRemoteForward(rCon, lCon)
+			}()
 		}
 	}
 
@@ -297,7 +302,6 @@ func DirectTCPIPHandler(srv *glssh.Server, conn *ssh.ServerConn, newChan ssh.New
 	}
 	dialer := net.Dialer{
 		LocalAddr: laddr,
-		Timeout:   SSHTimeout,
 	}
 
 	dconn, err := dialer.DialContext(ctx, "tcp", dest)
