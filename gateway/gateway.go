@@ -49,7 +49,8 @@ func init() {
 		glog.Fatalf("Failed to create versioned client from %q: %v", *kubeconfig, err)
 	}
 
-	g = gateway.NewGatewayController(cl, vcl, *namespace)
+	syncer := gateway.NewGatewaySyncer()
+	g = gateway.NewGatewayController(cl, vcl, *namespace, syncer)
 }
 
 func main() {
