@@ -192,9 +192,6 @@ func prepareTestServers(ctx context.Context, t *testing.T, echoAddr, sshAddr str
 }
 
 func TestForward(t *testing.T) {
-	// Initialize seed
-	rand.Seed(time.Now().UnixNano())
-
 	testCases := []struct {
 		name        string
 		localAddr   string
@@ -307,9 +304,187 @@ func TestForward(t *testing.T) {
 	}
 }
 
+func TestForwardNB(t *testing.T) {
+	testCases := []struct {
+		name        string
+		localAddr   string
+		serverAddr  string
+		remoteAddr  string
+		echoDown    bool
+		sshDown     bool
+		tunnelDown  bool
+		recovery    bool
+		config      *ssh.ClientConfig
+		msg         string
+		expectError bool
+	}{
+		{
+			name:       "Normal case",
+			localAddr:  "127.0.0.1:" + genRandomPort(),
+			serverAddr: "127.0.0.1:" + genRandomPort(),
+			remoteAddr: "127.0.0.1:" + genRandomPort(),
+			echoDown:   false,
+			sshDown:    false,
+			tunnelDown: false,
+			// No recovery required for no server down
+			recovery: false,
+			config: &ssh.ClientConfig{
+				Timeout:         time.Second * 5,
+				Auth:            []ssh.AuthMethod{},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			},
+			msg:         "hello",
+			expectError: false,
+		},
+		{
+			name:       "Error case (echo server down)",
+			localAddr:  "127.0.0.1:" + genRandomPort(),
+			serverAddr: "127.0.0.1:" + genRandomPort(),
+			remoteAddr: "127.0.0.1:" + genRandomPort(),
+			// Down
+			echoDown:   true,
+			sshDown:    false,
+			tunnelDown: false,
+			recovery:   false,
+			config: &ssh.ClientConfig{
+				Timeout:         time.Second * 5,
+				Auth:            []ssh.AuthMethod{},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			},
+			msg: "hello",
+			// Should return error
+			expectError: true,
+		},
+		{
+			name:       "Error case (ssh server down)",
+			localAddr:  "127.0.0.1:" + genRandomPort(),
+			serverAddr: "127.0.0.1:" + genRandomPort(),
+			remoteAddr: "127.0.0.1:" + genRandomPort(),
+			echoDown:   false,
+			// Down
+			sshDown:    true,
+			tunnelDown: false,
+			recovery:   false,
+			config: &ssh.ClientConfig{
+				Timeout:         time.Second * 5,
+				Auth:            []ssh.AuthMethod{},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			},
+			msg: "hello",
+			// Should return error
+			expectError: true,
+		},
+		{
+			name:       "Normal case (echo server down, then recover)",
+			localAddr:  "127.0.0.1:" + genRandomPort(),
+			serverAddr: "127.0.0.1:" + genRandomPort(),
+			remoteAddr: "127.0.0.1:" + genRandomPort(),
+			// Down
+			echoDown:   true,
+			sshDown:    false,
+			tunnelDown: false,
+			// Recovery for echoDown
+			recovery: true,
+			config: &ssh.ClientConfig{
+				Timeout:         time.Second * 5,
+				Auth:            []ssh.AuthMethod{},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			},
+			msg: "hello",
+			// Should succeed after recovery
+			expectError: false,
+		},
+		{
+			name:       "Normal case (ssh server down, then recover)",
+			localAddr:  "127.0.0.1:" + genRandomPort(),
+			serverAddr: "127.0.0.1:" + genRandomPort(),
+			remoteAddr: "127.0.0.1:" + genRandomPort(),
+			echoDown:   false,
+			// Down
+			sshDown:    true,
+			tunnelDown: false,
+			// Recovery for sshDown
+			recovery: true,
+			config: &ssh.ClientConfig{
+				Timeout:         time.Second * 5,
+				Auth:            []ssh.AuthMethod{},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			},
+			msg: "hello",
+			// Should succeed after recovery
+			expectError: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Logf("test case: %s", tc.name)
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// start echo server on remoteAddr and ssh server on serverAddr
+		prepareTestServers(ctx, t, tc.remoteAddr, tc.serverAddr, tc.echoDown, tc.sshDown)
+
+		// start tunnel to forward remoteAddr to localAddr
+		tun := NewTunnel(tc.localAddr, tc.serverAddr, tc.remoteAddr, tc.config)
+		tun.ForwardNB()
+
+		// Wait for two seconds for tunnel to be available
+		time.Sleep(2 * time.Second)
+
+		// test connecting to forwarded localAddr
+		msg, err := echoClient(tc.localAddr, tc.msg)
+		if !tc.recovery {
+			// Recovery is not needed, so just test current status
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("expected error, but no error returned")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error, but got error %v", err)
+				}
+				if tc.msg != msg {
+					t.Errorf("expected msg %s, but got %s", tc.msg, msg)
+				}
+			}
+		} else {
+			// When recovery is not needed, it should fail first
+			if err == nil {
+				t.Errorf("expected error before recovery, but no error returned")
+			}
+
+			// start unstarted server (Invert the flags)
+			prepareTestServers(ctx, t, tc.remoteAddr, tc.serverAddr, !tc.echoDown, !tc.sshDown)
+
+			// Wait for two seconds for tunnel to be available
+			time.Sleep(2 * time.Second)
+
+			// test connecting to forwarded localAddr after recovery
+			msg, err := echoClient(tc.localAddr, tc.msg)
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("expected error, but no error returned")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error, but got error %v", err)
+				}
+				if tc.msg != msg {
+					t.Errorf("expected msg %s, but got %s", tc.msg, msg)
+				}
+			}
+		}
+
+		// Cancel servers and tunnel
+		cancel()
+		tun.Cancel()
+
+		// Wait for a millisecond just to be sure that all servers closed
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestRemoteForward(t *testing.T) {
-	// Initialize seed
-	rand.Seed(time.Now().UnixNano())
 	testCases := []struct {
 		name        string
 		localAddr   string
@@ -415,6 +590,180 @@ func TestRemoteForward(t *testing.T) {
 
 		// Cancel servers and tunnel
 		cancel()
+		// Wait for a millisecond just to be sure that all servers closed
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestRemoteForwardNB(t *testing.T) {
+	testCases := []struct {
+		name        string
+		localAddr   string
+		serverAddr  string
+		remoteAddr  string
+		echoDown    bool
+		sshDown     bool
+		tunnelDown  bool
+		recovery    bool
+		config      *ssh.ClientConfig
+		msg         string
+		expectError bool
+	}{
+		{
+			name:       "Normal case",
+			localAddr:  "127.0.0.1:" + genRandomPort(),
+			serverAddr: "127.0.0.1:" + genRandomPort(),
+			remoteAddr: "127.0.0.1:" + genRandomPort(),
+			echoDown:   false,
+			sshDown:    false,
+			tunnelDown: false,
+			recovery:   false,
+			config: &ssh.ClientConfig{
+				Auth:            []ssh.AuthMethod{},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			},
+			msg:         "hello",
+			expectError: false,
+		},
+		{
+			name:       "Error case (echo server down)",
+			localAddr:  "127.0.0.1:" + genRandomPort(),
+			serverAddr: "127.0.0.1:" + genRandomPort(),
+			remoteAddr: "127.0.0.1:" + genRandomPort(),
+			// Down
+			echoDown:   true,
+			sshDown:    false,
+			tunnelDown: false,
+			recovery:   false,
+			config: &ssh.ClientConfig{
+				Auth:            []ssh.AuthMethod{},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			},
+			msg: "hello",
+			// Should return error
+			expectError: true,
+		},
+		{
+			name:       "Error case (ssh server down)",
+			localAddr:  "127.0.0.1:" + genRandomPort(),
+			serverAddr: "127.0.0.1:" + genRandomPort(),
+			remoteAddr: "127.0.0.1:" + genRandomPort(),
+			echoDown:   false,
+			// Down
+			sshDown:    true,
+			tunnelDown: false,
+			recovery:   false,
+			config: &ssh.ClientConfig{
+				Auth:            []ssh.AuthMethod{},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			},
+			msg: "hello",
+			// Should return error
+			expectError: true,
+		},
+		{
+			name:       "Normal case (echo server down, then recover)",
+			localAddr:  "127.0.0.1:" + genRandomPort(),
+			serverAddr: "127.0.0.1:" + genRandomPort(),
+			remoteAddr: "127.0.0.1:" + genRandomPort(),
+			// Down
+			echoDown:   true,
+			sshDown:    false,
+			tunnelDown: false,
+			// Recovery for sshDown
+			recovery: true,
+			config: &ssh.ClientConfig{
+				Auth:            []ssh.AuthMethod{},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			},
+			msg: "hello",
+			// Should succeed after recovery
+			expectError: false,
+		},
+		{
+			name:       "Normal case (ssh server down, then recover)",
+			localAddr:  "127.0.0.1:" + genRandomPort(),
+			serverAddr: "127.0.0.1:" + genRandomPort(),
+			remoteAddr: "127.0.0.1:" + genRandomPort(),
+			echoDown:   false,
+			// Down
+			sshDown:    true,
+			tunnelDown: false,
+			// Recovery for sshDown
+			recovery: true,
+			config: &ssh.ClientConfig{
+				Auth:            []ssh.AuthMethod{},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			},
+			msg: "hello",
+			// Should succeed after recovery
+			expectError: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Logf("test case: %s", tc.name)
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// start echo server on localAddr and ssh server on serverAddr
+		prepareTestServers(ctx, t, tc.localAddr, tc.serverAddr, tc.echoDown, tc.sshDown)
+
+		// start tunnel to remoteForward localAddr to remoteAddr
+		tun := NewTunnel(tc.localAddr, tc.serverAddr, tc.remoteAddr, tc.config)
+		tun.RemoteForwardNB()
+
+		// Wait for two seconds for tunnel to be available
+		time.Sleep(2 * time.Second)
+
+		// test connecting to forwarded remoteAddr
+		msg, err := echoClient(tc.remoteAddr, tc.msg)
+		if !tc.recovery {
+			// Recovery is not needed, so just test current status
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("expected error, but no error returned")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error, but got error %v", err)
+				}
+				if tc.msg != msg {
+					t.Errorf("expected msg %s, but got %s", tc.msg, msg)
+				}
+			}
+		} else {
+			// When recovery is not needed, it should fail first
+			if err == nil {
+				t.Errorf("expected error before recovery, but no error returned")
+			}
+
+			// start unstarted server (Invert the flags)
+			prepareTestServers(ctx, t, tc.localAddr, tc.serverAddr, !tc.echoDown, !tc.sshDown)
+
+			// Wait for two seconds for tunnel to be available
+			time.Sleep(2 * time.Second)
+
+			// test connecting to forwarded remoteAddr after recovery
+			msg, err := echoClient(tc.remoteAddr, tc.msg)
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("expected error, but no error returned")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error, but got error %v", err)
+				}
+				if tc.msg != msg {
+					t.Errorf("expected msg %s, but got %s", tc.msg, msg)
+				}
+			}
+		}
+
+		// Cancel servers and tunnel
+		cancel()
+		tun.Cancel()
+
 		// Wait for a millisecond just to be sure that all servers closed
 		time.Sleep(time.Millisecond)
 	}
