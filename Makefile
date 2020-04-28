@@ -31,3 +31,14 @@ generate-client:
     -e GROUPS_VERSION=$(GROUPS_VERSION) \
     -e GENERATION_TARGETS="client,lister,informer" \
     $(CLGENIMAGE)
+
+.PHONY: test test-unit
+test: test-unit
+
+test-unit:
+	go test `go list ./... | grep -v -e 'pkg/apis' -e 'pkg/client' -e 'mock_'`
+
+
+.PHONY: release
+
+release: test all
