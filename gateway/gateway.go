@@ -4,12 +4,15 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/golang/glog"
 	"github.com/mkimuram/k8s-ext-connector/pkg/gateway"
+	"github.com/mkimuram/k8s-ext-connector/pkg/util"
 
 	clversioned "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned"
 	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
+	sbinformers "github.com/mkimuram/k8s-ext-connector/pkg/client/informers/externalversions"
 	"k8s.io/client-go/tools/clientcmd"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -17,10 +20,8 @@ import (
 
 var (
 	kubeconfig *string
-	cl         *clv1alpha1.SubmarinerV1alpha1Client
-	vcl        *clversioned.Clientset
 	namespace  = flag.String("namespace", "external-services", "Kubernetes's namespace to watch for.")
-	g          *gateway.GatewayController
+	g          *util.Controller
 )
 
 func init() {
@@ -39,18 +40,20 @@ func init() {
 	}
 
 	// create clientset
-	cl, err = clv1alpha1.NewForConfig(config)
+	cl, err := clv1alpha1.NewForConfig(config)
 	if err != nil {
 		glog.Fatalf("Failed to create client from %q: %v", *kubeconfig, err)
 	}
 	// create versioned clientset
-	vcl, err = clversioned.NewForConfig(config)
+	vcl, err := clversioned.NewForConfig(config)
 	if err != nil {
 		glog.Fatalf("Failed to create versioned client from %q: %v", *kubeconfig, err)
 	}
 
-	syncer := gateway.NewGatewaySyncer()
-	g = gateway.NewGatewayController(cl, vcl, *namespace, syncer)
+	informerFactory := sbinformers.NewSharedInformerFactory(vcl, time.Second*30)
+	informer := informerFactory.Submariner().V1alpha1().Gateways().Informer()
+	reconciler := gateway.NewGatewayReconciler(cl, *namespace)
+	g = util.NewController(cl, informerFactory, informer, reconciler)
 }
 
 func main() {

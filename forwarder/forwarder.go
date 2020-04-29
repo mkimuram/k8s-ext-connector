@@ -3,11 +3,14 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	"github.com/golang/glog"
 	clversioned "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned"
 	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
+	sbinformers "github.com/mkimuram/k8s-ext-connector/pkg/client/informers/externalversions"
 	"github.com/mkimuram/k8s-ext-connector/pkg/forwarder"
+	"github.com/mkimuram/k8s-ext-connector/pkg/util"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
 )
@@ -15,7 +18,7 @@ import (
 var (
 	namespace string
 	name      string
-	fwd       *forwarder.ForwarderController
+	fwd       *util.Controller
 )
 
 func init() {
@@ -46,7 +49,10 @@ func init() {
 		glog.Fatalf("Failed to create versioned client: %v", err)
 	}
 
-	fwd = forwarder.NewForwarderController(cl, vcl, namespace, name)
+	informerFactory := sbinformers.NewSharedInformerFactory(vcl, time.Second*30)
+	informer := informerFactory.Submariner().V1alpha1().Forwarders().Informer()
+	reconciler := forwarder.NewForwarderReconciler(cl, namespace, name)
+	fwd = util.NewController(cl, informerFactory, informer, reconciler)
 }
 
 func main() {

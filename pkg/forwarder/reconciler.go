@@ -3,48 +3,34 @@ package forwarder
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/golang/glog"
 	"github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
-	clversioned "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned"
 	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
-	sbinformers "github.com/mkimuram/k8s-ext-connector/pkg/client/informers/externalversions"
-	sblisters "github.com/mkimuram/k8s-ext-connector/pkg/client/listers/submariner/v1alpha1"
 	"github.com/mkimuram/k8s-ext-connector/pkg/util"
 	"golang.org/x/crypto/ssh"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/workqueue"
-	"k8s.io/klog"
 )
 
-type ForwarderController struct {
-	clientset     *clv1alpha1.SubmarinerV1alpha1Client
+type ForwarderReconciler struct {
+	clientset     clv1alpha1.SubmarinerV1alpha1Interface
 	namespace     string
 	name          string
 	tunnels       map[string]*util.Tunnel
 	remoteTunnels map[string]*util.Tunnel
 	config        *ssh.ClientConfig
-	informer      cache.SharedIndexInformer
-	lister        sblisters.ForwarderLister
-	workqueue     workqueue.RateLimitingInterface
 }
 
-func NewForwarderController(cl *clv1alpha1.SubmarinerV1alpha1Client, vcl *clversioned.Clientset, ns, name string) *ForwarderController {
+var _ util.ReconcilerInterface = &ForwarderReconciler{}
+
+func NewForwarderReconciler(cl clv1alpha1.SubmarinerV1alpha1Interface, namespace, name string) *ForwarderReconciler {
 	// TODO: Create clientconfig properly
 	user := "root"
 	password := "password"
 
-	wq := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
-	informerFactory := sbinformers.NewSharedInformerFactory(vcl, time.Second*30)
-	informer := informerFactory.Submariner().V1alpha1().Forwarders()
-	controller := &ForwarderController{
+	return &ForwarderReconciler{
 		clientset:     cl,
-		namespace:     ns,
+		namespace:     namespace,
 		name:          name,
 		tunnels:       map[string]*util.Tunnel{},
 		remoteTunnels: map[string]*util.Tunnel{},
@@ -55,124 +41,20 @@ func NewForwarderController(cl *clv1alpha1.SubmarinerV1alpha1Client, vcl *clvers
 			},
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		},
-		informer:  informer.Informer(),
-		lister:    informer.Lister(),
-		workqueue: wq,
-	}
-
-	controller.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(object interface{}) {
-			if !controller.needEnqueue(object) {
-				return
-			}
-			klog.Infof("Added: %s", getKey(object))
-			controller.enqueueForwarder(object)
-		},
-		UpdateFunc: func(oldObject, newObject interface{}) {
-			if !controller.needEnqueue(newObject) {
-				return
-			}
-			klog.Infof("Updated: %s", getKey(newObject))
-			controller.enqueueForwarder(newObject)
-		},
-		DeleteFunc: func(object interface{}) {
-			if !controller.needEnqueue(object) {
-				return
-			}
-			klog.Infof("Deleted: %v", getKey(object))
-			controller.enqueueForwarder(object)
-		},
-	})
-
-	informerFactory.Start(wait.NeverStop)
-
-	return controller
-}
-
-func (f *ForwarderController) needEnqueue(obj interface{}) bool {
-	key, err := cache.MetaNamespaceKeyFunc(obj)
-	if err != nil {
-		return false
-	}
-
-	namespace, name, err := cache.SplitMetaNamespaceKey(key)
-	if err != nil {
-		return false
-	}
-
-	return f.namespace == namespace && f.name == name
-}
-
-func (f *ForwarderController) enqueueForwarder(obj interface{}) {
-	key, err := cache.MetaNamespaceKeyFunc(obj)
-	if err != nil {
-		utilruntime.HandleError(err)
-		return
-	}
-	f.workqueue.Add(key)
-}
-
-func getKey(obj interface{}) string {
-	key, err := cache.MetaNamespaceKeyFunc(obj)
-	if err != nil {
-		return ""
-	}
-	return key
-}
-
-func (f *ForwarderController) Run() {
-	defer utilruntime.HandleCrash()
-	defer f.workqueue.ShutDown()
-
-	if ok := cache.WaitForCacheSync(wait.NeverStop, f.informer.HasSynced); !ok {
-		glog.Fatalf("time out while waiting cache to be synced")
-	}
-
-	f.reconcile()
-}
-
-func (f *ForwarderController) reconcile() {
-	for f.processNextForwarder() {
 	}
 }
 
-func (f *ForwarderController) processNextForwarder() bool {
-	obj, shutdown := f.workqueue.Get()
-	if shutdown {
-		return false
-	}
-
-	err := func(obj interface{}) error {
-		defer f.workqueue.Done(obj)
-		key, ok := obj.(string)
-		if !ok {
-			f.workqueue.Forget(obj)
-			utilruntime.HandleError(fmt.Errorf("invalid key is passed to workqueue"))
-			return nil
-		}
-
-		if err := f.syncForwarder(key); err != nil {
-			f.workqueue.AddRateLimited(key)
-			return fmt.Errorf("error syncing %q: %v", key, err)
-		}
-		f.workqueue.Forget(obj)
+func (f *ForwarderReconciler) Reconcile(namespace, name string) error {
+	// Check if the resource needs to be handled
+	if f.namespace != namespace || f.name != name {
+		// no need to handle this resource
 		return nil
-	}(obj)
-
-	if err != nil {
-		utilruntime.HandleError(err)
-		return true
 	}
-
-	return true
-}
-
-func (f *ForwarderController) syncForwarder(key string) error {
-	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	fwd, err := f.clientset.Forwarders(namespace).Get(name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
-	fwd, err := f.clientset.Forwarders(namespace).Get(name, metav1.GetOptions{})
+
 	if needSync(fwd) {
 		if err := setSyncing(f.clientset, namespace, fwd); err != nil {
 			return err
@@ -199,51 +81,7 @@ func (f *ForwarderController) syncForwarder(key string) error {
 	return nil
 }
 
-func needSync(fwd *v1alpha1.Forwarder) bool {
-	// Sync is needed if
-	// - rule is not updating
-	// - generations are different between rule and sync || not is not synced
-	return fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating) &&
-		(fwd.Status.RuleGeneration != fwd.Status.SyncGeneration ||
-			fwd.Status.Conditions.IsTrueFor(v1alpha1.ConditionRuleSyncing))
-}
-
-func needCheckSync(fwd *v1alpha1.Forwarder) bool {
-	// CheckSync is needed if
-	// - rule is not updating
-	// - generations are the same between rule and sync
-	// - rule is synced
-	return fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleUpdating) &&
-		fwd.Status.RuleGeneration == fwd.Status.SyncGeneration &&
-		fwd.Status.Conditions.IsFalseFor(v1alpha1.ConditionRuleSyncing)
-}
-
-func setSyncing(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, fwd *v1alpha1.Forwarder) error {
-	var err error
-	if fwd.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionTrue)) {
-		fwd, err = clientset.Forwarders(ns).UpdateStatus(fwd)
-		if err != nil {
-			return err
-		}
-		glog.Infof("Update RuleSyncingCondition to true")
-	}
-	return nil
-}
-
-func setSynced(clientset *clv1alpha1.SubmarinerV1alpha1Client, ns string, fwd *v1alpha1.Forwarder) error {
-	var err error
-	if fwd.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionFalse)) {
-		fwd.Status.SyncGeneration = fwd.Status.RuleGeneration
-		fwd, err = clientset.Forwarders(ns).UpdateStatus(fwd)
-		if err != nil {
-			return err
-		}
-		glog.Infof("Update RuleSyncingCondition to false")
-	}
-	return nil
-}
-
-func (f *ForwarderController) syncRule(fwd *v1alpha1.Forwarder) error {
+func (f *ForwarderReconciler) syncRule(fwd *v1alpha1.Forwarder) error {
 	f.updateSSHTunnel(getExpectedSSHTunnel(fwd))
 	f.updateRemoteSSHTunnel(getExpectedRemoteSSHTunnel(fwd))
 
@@ -255,7 +93,7 @@ func (f *ForwarderController) syncRule(fwd *v1alpha1.Forwarder) error {
 	return nil
 }
 
-func (f *ForwarderController) toTunnel(tun string) *util.Tunnel {
+func (f *ForwarderReconciler) toTunnel(tun string) *util.Tunnel {
 	s := strings.Split(tun, ":")
 	local := fmt.Sprintf("%s:%s", s[0], s[1])
 	server := fmt.Sprintf("%s:%s", s[2], s[3])
@@ -264,7 +102,7 @@ func (f *ForwarderController) toTunnel(tun string) *util.Tunnel {
 	return util.NewTunnel(local, server, remote, f.config)
 }
 
-func (f *ForwarderController) deleteUnusedSSHTunnel(expected map[string]bool) {
+func (f *ForwarderReconciler) deleteUnusedSSHTunnel(expected map[string]bool) {
 	deleted := []string{}
 	for k, tunnel := range f.tunnels {
 		if _, ok := expected[k]; !ok {
@@ -279,7 +117,7 @@ func (f *ForwarderController) deleteUnusedSSHTunnel(expected map[string]bool) {
 	}
 }
 
-func (f *ForwarderController) ensureSSHTunnel(expected map[string]bool) {
+func (f *ForwarderReconciler) ensureSSHTunnel(expected map[string]bool) {
 	created := map[string]*util.Tunnel{}
 	for k, _ := range expected {
 		if _, ok := f.tunnels[k]; ok {
@@ -298,7 +136,7 @@ func (f *ForwarderController) ensureSSHTunnel(expected map[string]bool) {
 	}
 }
 
-func (f *ForwarderController) deleteUnusedRemoteSSHTunnel(expected map[string]bool) {
+func (f *ForwarderReconciler) deleteUnusedRemoteSSHTunnel(expected map[string]bool) {
 	deleted := []string{}
 	for k, tunnel := range f.remoteTunnels {
 		if _, ok := expected[k]; !ok {
@@ -313,7 +151,7 @@ func (f *ForwarderController) deleteUnusedRemoteSSHTunnel(expected map[string]bo
 	}
 }
 
-func (f *ForwarderController) ensureRemoteSSHTunnel(expected map[string]bool) {
+func (f *ForwarderReconciler) ensureRemoteSSHTunnel(expected map[string]bool) {
 	created := map[string]*util.Tunnel{}
 	for k, _ := range expected {
 		if _, ok := f.remoteTunnels[k]; ok {
@@ -332,12 +170,12 @@ func (f *ForwarderController) ensureRemoteSSHTunnel(expected map[string]bool) {
 	}
 }
 
-func (f *ForwarderController) updateSSHTunnel(expected map[string]bool) {
+func (f *ForwarderReconciler) updateSSHTunnel(expected map[string]bool) {
 	f.deleteUnusedSSHTunnel(expected)
 	f.ensureSSHTunnel(expected)
 }
 
-func (f *ForwarderController) updateRemoteSSHTunnel(expected map[string]bool) {
+func (f *ForwarderReconciler) updateRemoteSSHTunnel(expected map[string]bool) {
 	f.deleteUnusedRemoteSSHTunnel(expected)
 	f.ensureRemoteSSHTunnel(expected)
 }
@@ -395,11 +233,11 @@ func getExpectedIptablesRule(fwd *v1alpha1.Forwarder) map[string][][]string {
 	return it
 }
 
-func (f *ForwarderController) ruleSynced(fwd *v1alpha1.Forwarder) bool {
+func (f *ForwarderReconciler) ruleSynced(fwd *v1alpha1.Forwarder) bool {
 	return f.isTunnelRunning(fwd) && f.isIptablesRulesApplied(fwd)
 }
 
-func (f *ForwarderController) isTunnelRunning(fwd *v1alpha1.Forwarder) bool {
+func (f *ForwarderReconciler) isTunnelRunning(fwd *v1alpha1.Forwarder) bool {
 	for k, _ := range getExpectedSSHTunnel(fwd) {
 		if _, ok := f.tunnels[k]; !ok {
 			return false
@@ -426,7 +264,7 @@ func (f *ForwarderController) isTunnelRunning(fwd *v1alpha1.Forwarder) bool {
 	return true
 }
 
-func (f *ForwarderController) isIptablesRulesApplied(fwd *v1alpha1.Forwarder) bool {
+func (f *ForwarderReconciler) isIptablesRulesApplied(fwd *v1alpha1.Forwarder) bool {
 	// TODO: consider checking exact match?
 	// below only check that rules in chains do exist, so unused rules might remain
 	return util.CheckChainsExist(util.TableNAT, getExpectedIptablesRule(fwd))

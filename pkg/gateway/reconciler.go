@@ -4,8 +4,11 @@ import (
 	"context"
 
 	backoffv4 "github.com/cenkalti/backoff/v4"
+	"github.com/golang/glog"
 	"github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
+	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
 	"github.com/mkimuram/k8s-ext-connector/pkg/util"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -13,24 +16,59 @@ const (
 	postchainPrefix = "pst"
 )
 
-type GatewaySyncer struct {
-	ssh map[string]context.CancelFunc
+type GatewayReconciler struct {
+	clientset clv1alpha1.SubmarinerV1alpha1Interface
+	namespace string
+	ssh       map[string]context.CancelFunc
 }
 
-type GatewaySyncerInterface interface {
-	syncRule(gw *v1alpha1.Gateway) error
-	ruleSynced(gw *v1alpha1.Gateway) bool
-}
+var _ util.ReconcilerInterface = &GatewayReconciler{}
 
-var _ GatewaySyncerInterface = &GatewaySyncer{}
-
-func NewGatewaySyncer() *GatewaySyncer {
-	return &GatewaySyncer{
-		ssh: map[string]context.CancelFunc{},
+func NewGatewayReconciler(cl clv1alpha1.SubmarinerV1alpha1Interface, ns string) *GatewayReconciler {
+	return &GatewayReconciler{
+		clientset: cl,
+		namespace: ns,
+		ssh:       map[string]context.CancelFunc{},
 	}
 }
 
-func (g *GatewaySyncer) syncRule(gw *v1alpha1.Gateway) error {
+func (g *GatewayReconciler) Reconcile(namespace, name string) error {
+	// Check if the resource is in namespace to be handled
+	if g.namespace != namespace {
+		return nil
+	}
+
+	gw, err := g.clientset.Gateways(namespace).Get(name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if needSync(gw) {
+		if err := setSyncing(g.clientset, namespace, gw); err != nil {
+			return err
+		}
+
+		if err := g.syncRule(gw); err != nil {
+			glog.Errorf("failed to sync rule for %s/%s: %v", namespace, name, err)
+			return err
+		}
+
+		if err := setSynced(g.clientset, namespace, gw); err != nil {
+			return err
+		}
+	} else if needCheckSync(gw) {
+		if !g.ruleSynced(gw) {
+			glog.Errorf("rule for %s/%s is not synced any more", namespace, name)
+			// Set to syncing and return error to requeue and sync
+			if err := setSyncing(g.clientset, namespace, gw); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (g *GatewayReconciler) syncRule(gw *v1alpha1.Gateway) error {
 	if err := g.ensureSshdRunning(gw.Spec.GatewayIP); err != nil {
 		return err
 	}
@@ -42,7 +80,7 @@ func (g *GatewaySyncer) syncRule(gw *v1alpha1.Gateway) error {
 	return nil
 }
 
-func (g *GatewaySyncer) ensureSshdRunning(ip string) error {
+func (g *GatewayReconciler) ensureSshdRunning(ip string) error {
 	if _, ok := g.ssh[ip]; ok {
 		// Already running, skip creating new server
 		return nil
@@ -107,7 +145,7 @@ func getExpectedIptablesRule(gw *v1alpha1.Gateway) (map[string][][]string, map[s
 	return jumpChains, chains, nil
 }
 
-func (g *GatewaySyncer) applyIptablesRules(gw *v1alpha1.Gateway) error {
+func (g *GatewayReconciler) applyIptablesRules(gw *v1alpha1.Gateway) error {
 	jumpChains, chains, err := getExpectedIptablesRule(gw)
 	if err != nil {
 		return err
@@ -124,17 +162,17 @@ func (g *GatewaySyncer) applyIptablesRules(gw *v1alpha1.Gateway) error {
 	return nil
 }
 
-func (g *GatewaySyncer) ruleSynced(gw *v1alpha1.Gateway) bool {
+func (g *GatewayReconciler) ruleSynced(gw *v1alpha1.Gateway) bool {
 	return g.checkSshdRunning(gw.Spec.GatewayIP) && g.checkIptablesRulesApplied(gw)
 }
 
-func (g *GatewaySyncer) checkSshdRunning(ip string) bool {
+func (g *GatewayReconciler) checkSshdRunning(ip string) bool {
 	// TODO: consider more strict check?
 	// below only check that the port is open in the specified ip
 	return util.IsPortOpen(ip, util.SSHPort)
 }
 
-func (g *GatewaySyncer) checkIptablesRulesApplied(gw *v1alpha1.Gateway) bool {
+func (g *GatewayReconciler) checkIptablesRulesApplied(gw *v1alpha1.Gateway) bool {
 	jumpChains, chains, err := getExpectedIptablesRule(gw)
 	if err != nil {
 		return false
