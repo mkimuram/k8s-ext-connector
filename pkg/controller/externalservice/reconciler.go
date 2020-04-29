@@ -364,7 +364,7 @@ func updateForwarderRules(cl client.Client, cr *submarinerv1alpha1.ExternalServi
 	updateChanged := fwd.Status.Conditions.SetCondition(util.RuleUpdatingCondition(corev1.ConditionFalse))
 	syncChanged := fwd.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionUnknown))
 	if updateChanged || syncChanged {
-		fwd.Status.RuleGeneration += 1
+		fwd.Status.RuleGeneration++
 		if err := cl.Status().Update(context.TODO(), fwd); err != nil {
 			return err
 		}
@@ -462,7 +462,7 @@ func updateRulesForOneGateway(cl client.Client, fwds *submarinerv1alpha1.Forward
 	updateChanged := gw.Status.Conditions.SetCondition(util.RuleUpdatingCondition(corev1.ConditionFalse))
 	syncChanged := gw.Status.Conditions.SetCondition(util.RuleSyncingCondition(corev1.ConditionUnknown))
 	if updateChanged || syncChanged {
-		gw.Status.RuleGeneration += 1
+		gw.Status.RuleGeneration++
 		if err := cl.Status().Update(context.TODO(), gw); err != nil {
 			return err
 		}

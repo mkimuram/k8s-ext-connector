@@ -16,25 +16,29 @@ const (
 	postchainPrefix = "pst"
 )
 
-type GatewayReconciler struct {
+// Reconciler represents a reconciler for gateway
+type Reconciler struct {
 	clientset clv1alpha1.SubmarinerV1alpha1Interface
 	namespace string
 	ssh       map[string]context.CancelFunc
 }
 
-var _ util.ReconcilerInterface = &GatewayReconciler{}
+var _ util.ReconcilerInterface = &Reconciler{}
 
-func NewGatewayReconciler(cl clv1alpha1.SubmarinerV1alpha1Interface, ns string) *GatewayReconciler {
-	return &GatewayReconciler{
+// NewReconciler returns a Reconciler instance
+func NewReconciler(cl clv1alpha1.SubmarinerV1alpha1Interface, ns string) *Reconciler {
+	return &Reconciler{
 		clientset: cl,
 		namespace: ns,
 		ssh:       map[string]context.CancelFunc{},
 	}
 }
 
-func (g *GatewayReconciler) Reconcile(namespace, name string) error {
+// Reconcile reconciles gateway
+func (g *Reconciler) Reconcile(namespace, name string) error {
 	// Check if the resource is in namespace to be handled
 	if g.namespace != namespace {
+		// no need to handle this resource
 		return nil
 	}
 
@@ -68,7 +72,7 @@ func (g *GatewayReconciler) Reconcile(namespace, name string) error {
 	return nil
 }
 
-func (g *GatewayReconciler) syncRule(gw *v1alpha1.Gateway) error {
+func (g *Reconciler) syncRule(gw *v1alpha1.Gateway) error {
 	if err := g.ensureSshdRunning(gw.Spec.GatewayIP); err != nil {
 		return err
 	}
@@ -80,7 +84,7 @@ func (g *GatewayReconciler) syncRule(gw *v1alpha1.Gateway) error {
 	return nil
 }
 
-func (g *GatewayReconciler) ensureSshdRunning(ip string) error {
+func (g *Reconciler) ensureSshdRunning(ip string) error {
 	if _, ok := g.ssh[ip]; ok {
 		// Already running, skip creating new server
 		return nil
@@ -145,7 +149,7 @@ func getExpectedIptablesRule(gw *v1alpha1.Gateway) (map[string][][]string, map[s
 	return jumpChains, chains, nil
 }
 
-func (g *GatewayReconciler) applyIptablesRules(gw *v1alpha1.Gateway) error {
+func (g *Reconciler) applyIptablesRules(gw *v1alpha1.Gateway) error {
 	jumpChains, chains, err := getExpectedIptablesRule(gw)
 	if err != nil {
 		return err
@@ -162,17 +166,17 @@ func (g *GatewayReconciler) applyIptablesRules(gw *v1alpha1.Gateway) error {
 	return nil
 }
 
-func (g *GatewayReconciler) ruleSynced(gw *v1alpha1.Gateway) bool {
+func (g *Reconciler) ruleSynced(gw *v1alpha1.Gateway) bool {
 	return g.checkSshdRunning(gw.Spec.GatewayIP) && g.checkIptablesRulesApplied(gw)
 }
 
-func (g *GatewayReconciler) checkSshdRunning(ip string) bool {
+func (g *Reconciler) checkSshdRunning(ip string) bool {
 	// TODO: consider more strict check?
 	// below only check that the port is open in the specified ip
 	return util.IsPortOpen(ip, util.SSHPort)
 }
 
-func (g *GatewayReconciler) checkIptablesRulesApplied(gw *v1alpha1.Gateway) bool {
+func (g *Reconciler) checkIptablesRulesApplied(gw *v1alpha1.Gateway) bool {
 	jumpChains, chains, err := getExpectedIptablesRule(gw)
 	if err != nil {
 		return false

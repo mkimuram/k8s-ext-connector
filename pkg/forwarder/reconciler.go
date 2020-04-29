@@ -12,7 +12,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type ForwarderReconciler struct {
+// Reconciler represents a reconciler for forwarder
+type Reconciler struct {
 	clientset     clv1alpha1.SubmarinerV1alpha1Interface
 	namespace     string
 	name          string
@@ -21,14 +22,15 @@ type ForwarderReconciler struct {
 	config        *ssh.ClientConfig
 }
 
-var _ util.ReconcilerInterface = &ForwarderReconciler{}
+var _ util.ReconcilerInterface = &Reconciler{}
 
-func NewForwarderReconciler(cl clv1alpha1.SubmarinerV1alpha1Interface, namespace, name string) *ForwarderReconciler {
+// NewReconciler returns a Reconciler instance
+func NewReconciler(cl clv1alpha1.SubmarinerV1alpha1Interface, namespace, name string) *Reconciler {
 	// TODO: Create clientconfig properly
 	user := "root"
 	password := "password"
 
-	return &ForwarderReconciler{
+	return &Reconciler{
 		clientset:     cl,
 		namespace:     namespace,
 		name:          name,
@@ -44,7 +46,8 @@ func NewForwarderReconciler(cl clv1alpha1.SubmarinerV1alpha1Interface, namespace
 	}
 }
 
-func (f *ForwarderReconciler) Reconcile(namespace, name string) error {
+// Reconcile reconciles forwarder
+func (f *Reconciler) Reconcile(namespace, name string) error {
 	// Check if the resource needs to be handled
 	if f.namespace != namespace || f.name != name {
 		// no need to handle this resource
@@ -81,7 +84,7 @@ func (f *ForwarderReconciler) Reconcile(namespace, name string) error {
 	return nil
 }
 
-func (f *ForwarderReconciler) syncRule(fwd *v1alpha1.Forwarder) error {
+func (f *Reconciler) syncRule(fwd *v1alpha1.Forwarder) error {
 	f.updateSSHTunnel(getExpectedSSHTunnel(fwd))
 	f.updateRemoteSSHTunnel(getExpectedRemoteSSHTunnel(fwd))
 
@@ -93,7 +96,7 @@ func (f *ForwarderReconciler) syncRule(fwd *v1alpha1.Forwarder) error {
 	return nil
 }
 
-func (f *ForwarderReconciler) toTunnel(tun string) *util.Tunnel {
+func (f *Reconciler) toTunnel(tun string) *util.Tunnel {
 	s := strings.Split(tun, ":")
 	local := fmt.Sprintf("%s:%s", s[0], s[1])
 	server := fmt.Sprintf("%s:%s", s[2], s[3])
@@ -102,7 +105,7 @@ func (f *ForwarderReconciler) toTunnel(tun string) *util.Tunnel {
 	return util.NewTunnel(local, server, remote, f.config)
 }
 
-func (f *ForwarderReconciler) deleteUnusedSSHTunnel(expected map[string]bool) {
+func (f *Reconciler) deleteUnusedSSHTunnel(expected map[string]bool) {
 	deleted := []string{}
 	for k, tunnel := range f.tunnels {
 		if _, ok := expected[k]; !ok {
@@ -117,9 +120,9 @@ func (f *ForwarderReconciler) deleteUnusedSSHTunnel(expected map[string]bool) {
 	}
 }
 
-func (f *ForwarderReconciler) ensureSSHTunnel(expected map[string]bool) {
+func (f *Reconciler) ensureSSHTunnel(expected map[string]bool) {
 	created := map[string]*util.Tunnel{}
-	for k, _ := range expected {
+	for k := range expected {
 		if _, ok := f.tunnels[k]; ok {
 			// Already exists, skip creating tunnel
 			continue
@@ -136,7 +139,7 @@ func (f *ForwarderReconciler) ensureSSHTunnel(expected map[string]bool) {
 	}
 }
 
-func (f *ForwarderReconciler) deleteUnusedRemoteSSHTunnel(expected map[string]bool) {
+func (f *Reconciler) deleteUnusedRemoteSSHTunnel(expected map[string]bool) {
 	deleted := []string{}
 	for k, tunnel := range f.remoteTunnels {
 		if _, ok := expected[k]; !ok {
@@ -151,9 +154,9 @@ func (f *ForwarderReconciler) deleteUnusedRemoteSSHTunnel(expected map[string]bo
 	}
 }
 
-func (f *ForwarderReconciler) ensureRemoteSSHTunnel(expected map[string]bool) {
+func (f *Reconciler) ensureRemoteSSHTunnel(expected map[string]bool) {
 	created := map[string]*util.Tunnel{}
-	for k, _ := range expected {
+	for k := range expected {
 		if _, ok := f.remoteTunnels[k]; ok {
 			// Already exists, skip creating tunnel
 			continue
@@ -170,12 +173,12 @@ func (f *ForwarderReconciler) ensureRemoteSSHTunnel(expected map[string]bool) {
 	}
 }
 
-func (f *ForwarderReconciler) updateSSHTunnel(expected map[string]bool) {
+func (f *Reconciler) updateSSHTunnel(expected map[string]bool) {
 	f.deleteUnusedSSHTunnel(expected)
 	f.ensureSSHTunnel(expected)
 }
 
-func (f *ForwarderReconciler) updateRemoteSSHTunnel(expected map[string]bool) {
+func (f *Reconciler) updateRemoteSSHTunnel(expected map[string]bool) {
 	f.deleteUnusedRemoteSSHTunnel(expected)
 	f.ensureRemoteSSHTunnel(expected)
 }
@@ -233,17 +236,17 @@ func getExpectedIptablesRule(fwd *v1alpha1.Forwarder) map[string][][]string {
 	return it
 }
 
-func (f *ForwarderReconciler) ruleSynced(fwd *v1alpha1.Forwarder) bool {
+func (f *Reconciler) ruleSynced(fwd *v1alpha1.Forwarder) bool {
 	return f.isTunnelRunning(fwd) && f.isIptablesRulesApplied(fwd)
 }
 
-func (f *ForwarderReconciler) isTunnelRunning(fwd *v1alpha1.Forwarder) bool {
-	for k, _ := range getExpectedSSHTunnel(fwd) {
+func (f *Reconciler) isTunnelRunning(fwd *v1alpha1.Forwarder) bool {
+	for k := range getExpectedSSHTunnel(fwd) {
 		if _, ok := f.tunnels[k]; !ok {
 			return false
 		}
 	}
-	for k, _ := range getExpectedRemoteSSHTunnel(fwd) {
+	for k := range getExpectedRemoteSSHTunnel(fwd) {
 		if _, ok := f.remoteTunnels[k]; !ok {
 			return false
 		}
@@ -264,7 +267,7 @@ func (f *ForwarderReconciler) isTunnelRunning(fwd *v1alpha1.Forwarder) bool {
 	return true
 }
 
-func (f *ForwarderReconciler) isIptablesRulesApplied(fwd *v1alpha1.Forwarder) bool {
+func (f *Reconciler) isIptablesRulesApplied(fwd *v1alpha1.Forwarder) bool {
 	// TODO: consider checking exact match?
 	// below only check that rules in chains do exist, so unused rules might remain
 	return util.CheckChainsExist(util.TableNAT, getExpectedIptablesRule(fwd))

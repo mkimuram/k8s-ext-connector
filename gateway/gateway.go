@@ -52,7 +52,7 @@ func init() {
 
 	informerFactory := sbinformers.NewSharedInformerFactory(vcl, time.Second*30)
 	informer := informerFactory.Submariner().V1alpha1().Gateways().Informer()
-	reconciler := gateway.NewGatewayReconciler(cl, *namespace)
+	reconciler := gateway.NewReconciler(cl, *namespace)
 	g = util.NewController(cl, informerFactory, informer, reconciler)
 }
 

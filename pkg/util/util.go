@@ -12,9 +12,9 @@ import (
 const (
 	// gatewayRulePrefix is a prefix for gateway rule configmap name
 	gatewayRulePrefix = "gwrule"
-	// minPort is the smallest port number that can be used by forwarder pod
+	// MinPort is the smallest port number that can be used by forwarder pod
 	MinPort = 2049
-	// maxPort is the biggest port number that can be used by forwarder pod
+	// MaxPort is the biggest port number that can be used by forwarder pod
 	MaxPort = 65536
 )
 

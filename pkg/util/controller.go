@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
+// ReconcilerInterface is an interface for reconciler
 type ReconcilerInterface interface {
 	Reconcile(namespace, name string) error
 }
@@ -69,6 +70,7 @@ func getKey(obj interface{}) string {
 	return key
 }
 
+// Run runs a controller
 func (c *Controller) Run() {
 	defer utilruntime.HandleCrash()
 	defer c.workqueue.ShutDown()
