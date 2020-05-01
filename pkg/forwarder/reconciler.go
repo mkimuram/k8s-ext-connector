@@ -190,10 +190,10 @@ func updateIptablesRule(expected map[string][][]string) error {
 func getExpectedSSHTunnel(fwd *v1alpha1.Forwarder) map[string]bool {
 	st := map[string]bool{}
 	// Format fwd.Spec.EgressRules to
-	// {ForwarderIP}:{RelayPort}:{GatewayIP}:22:{DestinationIp}:{DestinationPort}
-	// TODO: make 22 a variable
+	// {ForwarderIP}:{RelayPort}:{GatewayIP}:2022:{DestinationIp}:{DestinationPort}
+	// TODO: make 2022 a variable
 	// ex)
-	//   "10.0.0.2:2049:192.168.122.201:22:192.168.122.140:8000"
+	//   "10.0.0.2:2049:192.168.122.201:2022:192.168.122.140:8000"
 	for _, rule := range fwd.Spec.EgressRules {
 		st[fmt.Sprintf("%s:%s:%s:%s:%s:%s", fwd.Spec.ForwarderIP, rule.RelayPort, rule.GatewayIP, util.SSHPort, rule.DestinationIP, rule.DestinationPort)] = true
 	}
@@ -204,10 +204,10 @@ func getExpectedSSHTunnel(fwd *v1alpha1.Forwarder) map[string]bool {
 func getExpectedRemoteSSHTunnel(fwd *v1alpha1.Forwarder) map[string]bool {
 	rt := map[string]bool{}
 	// Format fwd.Spec.IngressRules to
-	// {DestinationIp}:{DestinationPort}:{GatewayIP}:22:{GatewayIP}:{RelayPort}
-	// TODO: make 22 a variable
+	// {DestinationIp}:{DestinationPort}:{GatewayIP}:2022:{GatewayIP}:{RelayPort}
+	// TODO: make 2022 a variable
 	// ex)
-	//   "192.168.122.201:2049:192.168.122.201:22:10.96.218.78:80"
+	//   "10.96.218.78:80:192.168.122.201:2022:192.168.122.201:2049"
 	for _, rule := range fwd.Spec.IngressRules {
 		rt[fmt.Sprintf("%s:%s:%s:%s:%s:%s", rule.DestinationIP, rule.DestinationPort, rule.GatewayIP, util.SSHPort, rule.GatewayIP, rule.RelayPort)] = true
 	}
