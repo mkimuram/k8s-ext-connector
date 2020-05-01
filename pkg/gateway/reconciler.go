@@ -2,8 +2,10 @@ package gateway
 
 import (
 	"context"
+	"time"
 
 	backoffv4 "github.com/cenkalti/backoff/v4"
+	glssh "github.com/gliderlabs/ssh"
 	"github.com/golang/glog"
 	"github.com/mkimuram/k8s-ext-connector/pkg/apis/submariner/v1alpha1"
 	clv1alpha1 "github.com/mkimuram/k8s-ext-connector/pkg/client/clientset/versioned/typed/submariner/v1alpha1"
@@ -20,7 +22,7 @@ const (
 type Reconciler struct {
 	clientset clv1alpha1.SubmarinerV1alpha1Interface
 	namespace string
-	ssh       map[string]context.CancelFunc
+	ssh       map[string]glssh.Server
 }
 
 var _ util.ReconcilerInterface = &Reconciler{}
@@ -30,7 +32,7 @@ func NewReconciler(cl clv1alpha1.SubmarinerV1alpha1Interface, ns string) *Reconc
 	return &Reconciler{
 		clientset: cl,
 		namespace: ns,
-		ssh:       map[string]context.CancelFunc{},
+		ssh:       map[string]glssh.Server{},
 	}
 }
 
@@ -91,25 +93,37 @@ func (g *Reconciler) ensureSshdRunning(ip string) error {
 	}
 
 	srv := util.NewSSHServer(ip + ":" + util.SSHPort)
-	ctx, cf := context.WithCancel(context.Background())
-	b := backoffv4.WithContext(backoffv4.NewExponentialBackOff(), ctx)
-	go backoffv4.Retry(
+	b := backoffv4.WithContext(backoffv4.NewExponentialBackOff(), context.Background())
+	go backoffv4.RetryNotify(
 		func() error {
-			select {
-			case <-ctx.Done():
-				// TODO: Consider handling error for Close
-				srv.Close()
-				return nil
-			default:
-				if err := srv.ListenAndServe(); err != nil {
-					return err
-				}
+			if err := srv.ListenAndServe(); err != nil {
+				return err
 			}
 			return nil
 		},
-		b)
+		b,
+		func(err error, tm time.Duration) {
+			glog.Errorf("error in sshd for %q in duration %v: %v", ip, tm, err)
+		},
+	)
 
-	g.ssh[ip] = cf
+	g.ssh[ip] = srv
+
+	return nil
+}
+
+// TODO: check that this works well
+func (g *Reconciler) stopSshd(ip string) error {
+	srv, ok := g.ssh[ip]
+	if !ok {
+		// Already stopped
+		return nil
+	}
+
+	if err := srv.Close(); err != nil {
+		return err
+	}
+	delete(g.ssh, ip)
 
 	return nil
 }
