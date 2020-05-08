@@ -42,7 +42,7 @@ test-unit:
 	go test `go list ./... | grep -v -e 'pkg/apis' -e 'pkg/client' -e 'mock_' -e 'test/e2e'`
 
 test-e2e:
-	operator-sdk test local ./test/e2e --namespace=external-services --debug --go-test-flags=-v
+	operator-sdk test local ./test/e2e --namespace=external-services --debug --go-test-flags="-v -ginkgo.v"
 
 .PHONY: release
 
