@@ -2,6 +2,9 @@ package e2e
 
 import (
 	goctx "context"
+	"fmt"
+	"os/exec"
+	"strconv"
 	"testing"
 	"time"
 
@@ -33,12 +36,120 @@ var _ = ginkgo.Describe("[k8s-ext-connector]", func() {
 	})
 
 	ginkgo.It("should create resources when externalService is created", func() {
-		createExternalService(t, f, ctx, ns, true /* checkResource */)
+		es := &v1alpha1.ExternalService{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "es1",
+				Namespace: ns,
+			},
+			Spec: v1alpha1.ExternalServiceSpec{
+				TargetIP: "192.168.33.254",
+				Sources: []v1alpha1.Source{
+					{
+						Service: v1alpha1.ServiceRef{
+							Name:      "svc1",
+							Namespace: ns,
+						},
+						SourceIP: "192.168.33.100",
+					},
+				},
+				Ports: []corev1.ServicePort{
+					{
+						Protocol: corev1.ProtocolTCP,
+						Port:     8888,
+						TargetPort: intstr.IntOrString{
+							Type:   intstr.Int,
+							IntVal: 8888,
+						},
+					},
+				},
+			},
+		}
+		createExternalService(t, f, ctx, ns, es, true /* checkResource */)
 	})
 
-	ginkgo.It("should connect to external server from pod via specified source IP", func() {
-		createExternalService(t, f, ctx, ns, false /* checkResource */)
-		createSourcePodSvc(t, f, ctx, ns)
+	ginkgo.Context("[with servers]", func() {
+		var (
+			gctx     goctx.Context
+			cancel   goctx.CancelFunc
+			rsrvAddr string
+			esSrcIP  string
+			rsrvPort = 8888
+			esPort   = 8888
+			es       *v1alpha1.ExternalService
+		)
+
+		ginkgo.BeforeEach(func() {
+			if len(ips) < 2 {
+				fmt.Fprintf(ginkgo.GinkgoWriter, "ips: %v\n", ips)
+				ginkgo.Skip("Skipping tests with servers because not enough IPs assigned")
+			}
+			rsrvAddr = ips[0]
+			esSrcIP = ips[1]
+
+			// Set variables to es
+			es = &v1alpha1.ExternalService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "es1",
+					Namespace: ns,
+				},
+				Spec: v1alpha1.ExternalServiceSpec{
+					TargetIP: rsrvAddr,
+					Sources: []v1alpha1.Source{
+						{
+							Service: v1alpha1.ServiceRef{
+								Name:      "svc1",
+								Namespace: ns,
+							},
+							SourceIP: esSrcIP,
+						},
+					},
+					Ports: []corev1.ServicePort{
+						{
+							Protocol: corev1.ProtocolTCP,
+							Port:     int32(rsrvPort),
+							TargetPort: intstr.IntOrString{
+								Type:   intstr.Int,
+								IntVal: int32(esPort),
+							},
+						},
+					},
+				},
+			}
+
+			gctx, cancel = goctx.WithCancel(goctx.Background())
+
+			runGateway(gctx)
+			runRemoteServer(gctx, rsrvAddr, strconv.Itoa(rsrvPort))
+		})
+
+		ginkgo.AfterEach(func() {
+			cancel()
+		})
+
+		ginkgo.It("should connect to external server from pod via specified source IP", func() {
+			createExternalService(t, f, ctx, ns, es, true /* checkResource */)
+			createSourcePodSvc(t, f, ctx, ns)
+			// wait for pod to be ready
+			time.Sleep(time.Second * 5)
+
+			// access from this host to remote server
+			cmd := exec.Command("curl", fmt.Sprintf("%s:%d", rsrvAddr, rsrvPort))
+			out, err := cmd.Output()
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "error executing command")
+			// expect host IP (just check that it isn't podIP and externalservice's source IP)
+			gomega.Expect(out).NotTo(gomega.Equal(esSrcIP), "source IP shouldn't be external service's source IP")
+
+			// access from pod to remote server, directly
+			daccessIP, _, err := execInPod(f.KubeClient, f.KubeConfig, ns, "pod1", "centos", []string{"curl", fmt.Sprintf("%s:%d", rsrvAddr, rsrvPort)})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "error executing command in pod")
+			// expect podIP or nodeIP (just check that it isn't podIP and externalservice's source IP)
+			gomega.Expect(daccessIP).NotTo(gomega.Equal(esSrcIP), "source IP shouldn't be external service's source IP")
+
+			// access from pod to remote server via external service
+			esAccessIP, _, err := execInPod(f.KubeClient, f.KubeConfig, ns, "pod1", "centos", []string{"curl", fmt.Sprintf("es1.external-services:%d", esPort)})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "error executing command in pod")
+			gomega.Expect(esAccessIP).To(gomega.Equal(esSrcIP), "source IP should be external services' sourceIP")
+		})
 	})
 })
 
@@ -46,39 +157,10 @@ func cleanupOptions(ctx *framework.TestCtx) *framework.CleanupOptions {
 	return &framework.CleanupOptions{TestContext: ctx, Timeout: cleanupTimeout, RetryInterval: cleanupRetryInterval}
 }
 
-func createExternalService(t *testing.T, f *framework.Framework, ctx *framework.TestCtx, ns string, checkResource bool) {
+func createExternalService(t *testing.T, f *framework.Framework, ctx *framework.TestCtx, ns string, es *v1alpha1.ExternalService, checkResource bool) {
 	var err error
 
 	// Create externalService
-	es := &v1alpha1.ExternalService{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "es1",
-			Namespace: ns,
-		},
-		Spec: v1alpha1.ExternalServiceSpec{
-			TargetIP: "192.168.122.139",
-			Sources: []v1alpha1.Source{
-				{
-					Service: v1alpha1.ServiceRef{
-						Name:      "svc1",
-						Namespace: ns,
-					},
-					SourceIP: "192.168.122.200",
-				},
-			},
-			Ports: []corev1.ServicePort{
-				{
-					Protocol: corev1.ProtocolTCP,
-					Port:     80,
-					TargetPort: intstr.IntOrString{
-						Type:   intstr.Int,
-						IntVal: 8080,
-					},
-				},
-			},
-		},
-	}
-
 	err = f.Client.Create(goctx.TODO(), es, cleanupOptions(ctx))
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "creating externalservice failed")
 
