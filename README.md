@@ -15,15 +15,15 @@ Also, this is just a prototype to have further discussions on implementation ide
 ## How it works
 See [connection from k8s to external server](https://github.com/kubernetes/enhancements/pull/1105#issuecomment-571694606) and [connection from external server to k8s](https://github.com/kubernetes/enhancements/pull/1105#issuecomment-575424609) for basic ideas. Scripts in this repo will automatically configure iptables rules and ssh tunnels ,which are explained in the URLs, by the [API](#API).
 
-There are mainly three scripts:
-- [forwarder.sh](forwarder/forwarder.sh): It runs inside forwarder pod, which is created per external server. It creates ssh tunnels and applys iptables rules for accessing to the external server,
-- [gateway.sh](gateway/gateway.sh): It runs on the gateway node. It creates network namespace and assign external IP to it, and run sshd per IP. Then, it applys iptables rules for accessing from the external server,
-- [controller.sh](controller/controller.sh): It creates and deletes forwarder pod and keep configurations for forwarder.sh and gateway.sh up-to-date.
+There are mainly three components:
+- operator: It creates and deletes forwarder pod and keep configurations for forwarder and gateway up-to-date. Configurations are passed by using Forwarder CRDs and Gateway CRDs. These CRDs aren't user-facing API and expected to be used only by forwarder and gateway,
+- forwarder: It runs inside forwarder pod created by operator. It is created per external server. It creates ssh tunnels to gateway and applys iptables rules for accessing to the external server,
+- gateway: It runs on the gateway node. It runs ssh server for fowarding per IP and manage iptables rules for accessing from the external server,
 
 For multi-cloud usecases, submariner should help achieve this goal, by connecting k8s clusters.
 
 ## Usage
-To try this, you need 3 servers, external server, gateway server, and k8s server (Just for test, external server and k8s server can be the same). Also, these servers need to be acccessible each other, and you need to assign 2 extra IPs to gateway server (Actually, external server and k8s server doesn't necessary need to be accessible directly, but will be able to be accessible via gateay server).
+To try this, you need 3 servers, external server, gateway server, and k8s server (Just for test, these servers can be the same). Also, these servers need to be acccessible each other, and you need to assign 2 extra IPs to gateway server (Actually, external server and k8s server doesn't necessary need to be accessible directly, but will be able to be accessible via gateay server).
 
 1. On external server
     1. Run an application that will be accessed from pods on k8s cluster. Below command will run http server on port 8000. 
@@ -32,95 +32,87 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
         $ python -m SimpleHTTPServer 2>&1 | tee /tmp/access.log
         ```
 
+	   Note that this node is just for test. You can replace it with any servers that actually requires access from/to pods in k8s cluster.
+
 2. On gateway server
     1. Clone k8s-ext-connector repo.
 
         ```console
-        # git clone https://github.com/mkimuram/k8s-ext-connector.git
-        # cd k8s-ext-connector/gateway
+        $ git clone https://github.com/mkimuram/k8s-ext-connector.git
+        $ cd k8s-ext-connector/gateway
         ```
 
-    2. Review ips.conf. Replace IPs to be used as external IPs. (External IPs here are the extra IPs that is mentioned above and will be assinged by the script below.)
-
+    2. Build gateway command.
         ```console
-        # vi ips.conf
+        $ make gateway
         ```
 
-    3. Edit `/etc/ssh/sshd_config` and set `GatewayPorts` to `clientspecified`.
-
+    3. Run gateway command.
         ```console
-        GatewayPorts clientspecified
+        $ ./gateway/bin/gateway
         ```
 
-    4. Run gateway.sh.
+		Note that `-kubeconfig` with proper path to kubeconfig file needs to be specified, unless it is in `$HOME/.kube/config`. Also, if you would like to use well-known ports, you need to run it with root privilege.
 
+    4. Assign IP addresses to be used as source IPs. (Change IP address and device name to fit to your environment.)
         ```console
-        export NETMASK=24
-        export DEFAULT_GATEWAY=192.168.122.1
-        export NIC=eth0
-        # ./gateway.sh ips.conf
+        $ sudo ip addr add 192.168.122.200/32 dev eth0
+        $ sudo ip addr add 192.168.122.201/32 dev eth0
         ```
 
 3. On k8s server
     1. Setup k8s cluster if not exists and create pods and services.
 
         ```console
-        # kind create cluster
+        $ kind create cluster
         ```
 
+    2. Run pods to test with.
+
         ```console
-        # kubectl create ns ns1
-        # kubectl run my-pod1 -n ns1 --image=centos:7 --restart=Never --command -- python -m SimpleHTTPServer 80
-        # kubectl expose pod my-pod1 --name=my-service1 -n ns1 --port=80
-        # kubectl create ns ns2
-        # kubectl run my-pod2 -n ns2 --image=centos:7 --restart=Never --command -- python -m SimpleHTTPServer 80
-        # kubectl expose pod my-pod2 --name=my-service2 -n ns2 --port=80
+        $ kubectl create ns ns1
+        $ kubectl run my-pod1 -n ns1 --image=centos:7 --restart=Never --command -- python -m SimpleHTTPServer 80
+        $ kubectl expose pod my-pod1 --name=my-service1 -n ns1 --port=80
+        $ kubectl create ns ns2
+        $ kubectl run my-pod2 -n ns2 --image=centos:7 --restart=Never --command -- python -m SimpleHTTPServer 80
+        $ kubectl expose pod my-pod2 --name=my-service2 -n ns2 --port=80
         ```
 
-    2. Clone k8s-ext-connector repo.
+    3. Clone k8s-ext-connector repo.
 
         ```console
-        # git clone https://github.com/mkimuram/k8s-ext-connector.git
+        $ git clone https://github.com/mkimuram/k8s-ext-connector.git
         ```
 
-    3. Build forwarder image.
+    4. Build operator and forwarder image.
 
         ```console
-        # cd k8s-ext-connector/forwarder
-        # docker build -t forwarder:0.1 .
+        $ make all
         ```
 
-    4. Make forwarder image available on k8s cluster (For a cluster created with kind, do below.)
+    5. Make images available on k8s cluster (For a cluster created with kind, do below.)
 
         ```console
-        # kind load docker-image forwarder:0.1
+        $ kind load docker-image forwarder:0.1
+        $ kind load docker-image k8s-ext-connector:v0.0.1
         ```
 
-    5. Define gateway server's IP address as a bash environment variable (Replace the IP with proper one). 
+    6. Deploy operator
 
         ```console
-        # export GATEWAY_NODE_IP="192.168.122.192"
+        $ ./deploy.sh
         ```
 
-    6. Prepare ssh key to connect to gateway node. (Hit enter for all prompts in `ssh-keygen` and type "yes" and password for `ssh-copy-id`.)
+    7. Review manifest for externalService resource, or `deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml`. Replace `targetIP` and `sourceIP` to fit to your environment. (`targetIP` should be external server's IP and `sourceIP` should be external IPs above. See [API](#API) for details.)
 
         ```console
-        # export SSH_KEY_PATH="/root/forwarder_ssh_key_rsa"
-        # ssh-keygen -t rsa -f "${SSH_KEY_PATH}"
-        # ssh-copy-id -i "${SSH_KEY_PATH}" "${GATEWAY_NODE_IP}" 
+        $ vi deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml
         ```
 
-    7. Review conf files under conf/ directory. Replace `targetIP` and `sourceIP` to fit to your environment. (`targetIP` should be external server's IP and `sourceIP` should be external IPs above. See [API](#API) for details.)
+    8. Create externalService resource
 
         ```console
-        # cd ../controller
-        # vi conf/my-external-service1.yaml
-        ```
-
-    8. Run controller.sh
-
-        ```console
-        # ./controller.sh conf
+        $ kubectl create -f deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml
         ```
 
 4. Test connectivity
@@ -128,72 +120,74 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
         - On k8s server
 
         ```console
-        # kubectl exec -it my-pod1 -n ns1 -- curl my-external-service1.external-services.svc.cluster.local:8000
+        $ kubectl exec -it my-pod1 -n ns1 -- curl my-external-service1.external-services.svc.cluster.local:8000
         ```
 
         - On external server
 
         ```console
-        # tail /tmp/access.log
+        $ tail /tmp/access.log
         ```
 
     2. Connect to external server from my-pod2 and check source IP of the access.
         - On k8s server
 
         ```console
-        # kubectl exec -it my-pod2 -n ns2 -- curl my-external-service1.external-services.svc.cluster.local:8000
+        $ kubectl exec -it my-pod2 -n ns2 -- curl my-external-service1.external-services.svc.cluster.local:8000
         ```
 
         - On external server
 
         ```console
-        # tail /tmp/access.log
+        $ tail /tmp/access.log
         ```
 
     3. Connect to my-pod1, or my-service1, from external server and check source IP of the access.
         - On external server
 
         ```console
-        # EXTERNAL_IP1=192.168.122.200
-        # curl "${EXTERNAL_IP1}"
+        $ EXTERNAL_IP1=192.168.122.200
+        $ curl "${EXTERNAL_IP1}"
         ```
 
         - On k8s server
 
         ```console
-        # kubectl logs my-pod1 -n ns1 
+        $ kubectl logs my-pod1 -n ns1
         ```
 
     4. Connect to my-pod2, or my-service2, from external server and check source IP of the access.
         - On external server
 
         ```console
-        # EXTERNAL_IP2=192.168.122.201
-        # curl "${EXTERNAL_IP2}"
+        $ EXTERNAL_IP2=192.168.122.201
+        $ curl "${EXTERNAL_IP2}"
         ```
 
         - On k8s server
 
          ```console
-        # kubectl logs my-pod2 -n ns2 
+        $ kubectl logs my-pod2 -n ns2
         ```
 
 ## Undeploy
 1. On k8s server
-    1. Stop `./controller.sh conf` process.
-    2. Run teardown.sh in k8s-ext-connector/controller directory. Note that conf/ directory should contain the same contents that are passed to controller.sh.
+    1. Delete all `externalService` resources
+    2. Run deploy.sh with `-u` option.
 
         ```console
-        # ./teardown.sh conf
+        $ ./deploy.sh -u
         ```
 
 2. On gateway server
-    1. Stop `./gateway.sh ips.conf` process.
-    2. Run teardown.sh in k8s-ext-connector/gateway directory. Note that ips.conf should have the same content that is passed to gateway.sh.
+    1. Stop `./gateway/bin/gateway` process.
+	2. Remove IP addresses.
 
         ```console
-        # ./teardown.sh ips.conf
+        $ sudo ip addr del 192.168.122.200/32 dev eth0
+        $ sudo ip addr del 192.168.122.201/32 dev eth0
         ```
+
 3. On external server
     1. Stop `python -m SimpleHTTPServer` process.
 
@@ -201,18 +195,18 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
 API is subject to change after further discussions. However, current API is like below:
 
 ```
-apiVersion: externalservice.example.com/v1alpha1
+apiVersion: submariner.io/v1alpha1
 kind: ExternalService
 metadata:
-  name: my-external-service1
+  name: my-externalservice
 spec:
   targetIP: 192.168.122.139
   sources:
-    - service: 
+    - service:
         namespace: ns1
         name: my-service1
       sourceIP: 192.168.122.200
-    - service: 
+    - service:
         namespace: ns2
         name: my-service2
       sourceIP: 192.168.122.201
@@ -235,5 +229,3 @@ In above case:
 ## Limitations
 - Only TCP is handled now and UDP is not handled. (Supporting UDP with ssh tunnel will be possible, technically.)
 - Remote ssh tunnels are created for all cases, but it won't always be necessary. We might consider adding like `bidirectional` flag and avoid creating ones if it is set to false.
-- Updating configurations and applying configurations to forwarder pods and the gateway node are done async on INTERVAL(10 seconds), which will make a big delay until the configurations are reflected. If implemented with k8s operator, this kind of delays will be reduced by updating and applying configurations when changes are detected. 
-- It assumes that sshds are run by root user. We will need to apply principle of least privilege for better security. (Also, shell access for these ssh connection won't needed.)
