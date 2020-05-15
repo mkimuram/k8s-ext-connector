@@ -156,8 +156,6 @@ func (t *Tunnel) Forward() error {
 			}()
 		}
 	}
-
-	return nil
 }
 
 // String returns string representation of Tunnel.
@@ -251,8 +249,6 @@ func (t *Tunnel) RemoteForward() error {
 			}()
 		}
 	}
-
-	return nil
 }
 
 // RemoteForwardNB is non-blocking version of RemoteForward

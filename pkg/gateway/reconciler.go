@@ -22,7 +22,7 @@ const (
 type Reconciler struct {
 	clientset clv1alpha1.SubmarinerV1alpha1Interface
 	namespace string
-	ssh       map[string]glssh.Server
+	ssh       map[string]*glssh.Server
 }
 
 var _ util.ReconcilerInterface = &Reconciler{}
@@ -32,7 +32,7 @@ func NewReconciler(cl clv1alpha1.SubmarinerV1alpha1Interface, ns string) *Reconc
 	return &Reconciler{
 		clientset: cl,
 		namespace: ns,
-		ssh:       map[string]glssh.Server{},
+		ssh:       map[string]*glssh.Server{},
 	}
 }
 
@@ -107,7 +107,7 @@ func (g *Reconciler) ensureSshdRunning(ip string) error {
 		},
 	)
 
-	g.ssh[ip] = srv
+	g.ssh[ip] = &srv
 
 	return nil
 }

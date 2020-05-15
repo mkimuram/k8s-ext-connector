@@ -131,8 +131,6 @@ func startEchoServer(ctx context.Context, addr string) error {
 			conn.Write(line)
 		}
 	}
-
-	return nil
 }
 
 func genRandomPort() string {

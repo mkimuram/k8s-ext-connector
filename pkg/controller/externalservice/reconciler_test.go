@@ -236,7 +236,7 @@ func TestReconcile(t *testing.T) {
 		{
 			name: "Error case (Fails but not requeued, due to lack of external service)",
 			req: reconcile.Request{
-				types.NamespacedName{
+				NamespacedName: types.NamespacedName{
 					Namespace: "ns1",
 					Name:      "es1",
 				},
@@ -250,7 +250,7 @@ func TestReconcile(t *testing.T) {
 		{
 			name: "Error case (Fails and requeued, due to no IP assigned to forwarder pod)",
 			req: reconcile.Request{
-				types.NamespacedName{
+				NamespacedName: types.NamespacedName{
 					Namespace: "ns1",
 					Name:      "es1",
 				},
@@ -265,7 +265,7 @@ func TestReconcile(t *testing.T) {
 		{
 			name: "Normal case (no service exists)",
 			req: reconcile.Request{
-				types.NamespacedName{
+				NamespacedName: types.NamespacedName{
 					Namespace: "ns1",
 					Name:      "es1",
 				},
@@ -279,7 +279,7 @@ func TestReconcile(t *testing.T) {
 		{
 			name: "Normal case (service exists)",
 			req: reconcile.Request{
-				types.NamespacedName{
+				NamespacedName: types.NamespacedName{
 					Namespace: "ns1",
 					Name:      "es1",
 				},

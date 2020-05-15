@@ -32,11 +32,14 @@ generate-client:
     -e GENERATION_TARGETS="client,lister,informer" \
     $(CLGENIMAGE)
 
-.PHONY: test-all test-lint test-unit test-e2e
-test-all: test-lint test-unit test-e2e
+.PHONY: test-all test-lint test-vet test-unit test-e2e
+test-all: test-lint test-vet test-unit test-e2e
 
 test-lint:
 	golint `go list ./... | grep -v -e 'pkg/apis' -e 'pkg/client' -e 'mock_'`
+
+test-vet:
+	go vet ./...
 
 test-unit:
 	go test `go list ./... | grep -v -e 'pkg/apis' -e 'pkg/client' -e 'mock_' -e 'test/e2e'`
