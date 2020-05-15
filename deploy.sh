@@ -5,7 +5,6 @@ files=$(cat << EOF
 service_account.yaml
 role.yaml
 role_binding.yaml
-crds/submariner.io_externalconnectors_crd.yaml
 crds/submariner.io_externalservices_crd.yaml
 crds/submariner.io_forwarders_crd.yaml
 crds/submariner.io_gateways_crd.yaml
