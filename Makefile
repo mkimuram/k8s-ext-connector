@@ -4,15 +4,17 @@ PROJECT_PACKAGE := "github.com/mkimuram/k8s-ext-connector"
 GROUPS_VERSION := "submariner:v1alpha1"
 FORWARDER_IMAGE := forwarder
 FORWARDER_VERSION := v0.3.0
+GATEWAY_IMAGE := gateway
+GATEWAY_VERSION := v0.3.0
 OPERATOR_IMAGE := k8s-ext-connector
 OPERATOR_VERSION := v0.3.0
 IMAGE_REPO := docker.io/mkimuram
 
-.PHONY: build-all push-all forwarder forwarder-image push-forwarder gateway operator push-operator clean generate-client
+.PHONY: build-all push-all forwarder forwarder-image push-forwarder gateway gateway-image push-gateway operator push-operator clean generate-client
 
-build-all: forwarder-image gateway operator
+build-all: forwarder-image gateway-image operator
 
-push-all: push-forwarder push-operator
+push-all: push-forwarder push-gateway push-operator
 
 forwarder:
 	cd forwarder && mkdir -p bin && GO111MODULE=on go build -o bin/forwarder .
@@ -26,6 +28,13 @@ push-forwarder:
 
 gateway:
 	cd gateway && mkdir -p bin && GO111MODULE=on go build -o bin/gateway .
+
+gateway-image: gateway
+	cd gateway && docker build -t $(GATEWAY_IMAGE):$(GATEWAY_VERSION) .
+
+push-gateway:
+	docker tag $(GATEWAY_IMAGE):$(GATEWAY_VERSION) $(IMAGE_REPO)/$(GATEWAY_IMAGE):$(GATEWAY_VERSION)
+	docker push $(IMAGE_REPO)/$(GATEWAY_IMAGE):$(GATEWAY_VERSION)
 
 operator:
 	operator-sdk build $(OPERATOR_IMAGE):$(OPERATOR_VERSION)

@@ -34,33 +34,46 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
 
 	   Note that this node is just for test. You can replace it with any servers that actually requires access from/to pods in k8s cluster.
 
-2. On gateway server
+2. On k8s server (1)
     1. Clone k8s-ext-connector repo.
 
         ```console
         $ git clone https://github.com/mkimuram/k8s-ext-connector.git
-        $ cd k8s-ext-connector/gateway
         ```
 
-    2. Build gateway command.
+    2. Deploy operator
+
         ```console
-        $ make gateway
+        $ cd k8s-ext-connector
+        $ ./deploy.sh
         ```
 
-    3. Run gateway command.
-        ```console
-        $ ./gateway/bin/gateway
-        ```
-
-		Note that `-kubeconfig` with proper path to kubeconfig file needs to be specified, unless it is in `$HOME/.kube/config`. Also, if you would like to use well-known ports, you need to run it with root privilege.
-
-    4. Assign IP addresses to be used as source IPs. (Change IP address and device name to fit to your environment.)
+3. On gateway server
+    1. Assign IP addresses to be used as source IPs. (Change IP address and device name to fit to your environment.)
         ```console
         $ sudo ip addr add 192.168.122.200/32 dev eth0
         $ sudo ip addr add 192.168.122.201/32 dev eth0
         ```
 
-3. On k8s server
+	2. Run gateway either by using a) container image or b) binary
+        - a) Run gateway by using container image
+        ```console
+        $ docker run --network host --cap-add NET_ADMIN -v $HOME/.kube/config:/config:ro -it docker.io/mkimuram/gateway:v0.3.0 /gateway -kubeconfig=config
+        ```
+
+        Note that `$HOME/.kube/config` should be replaced with proper path to kubeconfig file.
+
+        - b) Run gateway by using binary
+        ```console
+        $ git clone https://github.com/mkimuram/k8s-ext-connector.git
+        $ cd k8s-ext-connector
+        $ make gateway
+        $ ./gateway/bin/gateway
+        ```
+
+	    Note that `-kubeconfig` with proper path to kubeconfig file needs to be specified, unless it is in `$HOME/.kube/config`. Also, if you would like to use well-known ports, you need to run it with root privilege.
+
+4. On k8s server (2)
     1. Create pods and services to test with.
 
         ```console
@@ -72,37 +85,26 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
         $ kubectl expose pod my-pod2 --name=my-service2 -n ns2 --port=80
         ```
 
-    2. Clone k8s-ext-connector repo.
+        Note that these pods and services are just for test. You can replace them with any pods and services.
 
-        ```console
-        $ git clone https://github.com/mkimuram/k8s-ext-connector.git
-        ```
-
-    3. Deploy operator
-
-        ```console
-        $ cd k8s-ext-connector
-        $ ./deploy.sh
-        ```
-
-    4. Review manifest for externalService resource, or `deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml`. Replace `targetIP` and `sourceIP` to fit to your environment. (`targetIP` should be external server's IP and `sourceIP` should be external IPs above. See [API](#API) for details.)
+    2. Review manifest for externalService resource, or `deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml`. Replace `targetIP` and `sourceIP` to fit to your environment. (`targetIP` should be external server's IP and `sourceIP` should be external IPs above. See [API](#API) for details.)
 
         ```console
         $ vi deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml
         ```
 
-    5. Create externalService resource
+    3. Create externalService resource
 
         ```console
         $ kubectl create -f deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml
         ```
 
-4. Test connectivity
+5. Test connectivity
     1. Connect to external server from my-pod1 and check source IP of the access.
         - On k8s server
 
         ```console
-        $ kubectl exec -it my-pod1 -n ns1 -- curl my-external-service1.external-services.svc.cluster.local:8000
+		$ kubectl exec -it my-pod1 -n ns1 -- curl my-externalservice.external-services:8000
         ```
 
         - On external server
@@ -115,7 +117,7 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
         - On k8s server
 
         ```console
-        $ kubectl exec -it my-pod2 -n ns2 -- curl my-external-service1.external-services.svc.cluster.local:8000
+		$ kubectl exec -it my-pod2 -n ns2 -- curl my-externalservice.external-services:8000
         ```
 
         - On external server
@@ -154,15 +156,31 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
 
 ## Undeploy
 1. On k8s server
-    1. Delete all `externalService` resources
+    1. Delete `externalService` resource
+
+        ```console
+        $ kubectl delete -f deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml
+        ```
+
     2. Run deploy.sh with `-u` option.
 
         ```console
         $ ./deploy.sh -u
         ```
 
+    3. Delete pods and services used to test.
+
+        ```console
+        $ kubectl delete service my-service1 -n ns1
+        $ kubectl delete my-pod1 -n ns1
+        $ kubectl create ns ns1
+        $ kubectl delete service my-service2 -n ns2
+        $ kubectl delete my-pod2 -n ns2
+        $ kubectl create ns ns2
+        ```
+
 2. On gateway server
-    1. Stop `./gateway/bin/gateway` process.
+    1. Stop gateway process
 	2. Remove IP addresses.
 
         ```console

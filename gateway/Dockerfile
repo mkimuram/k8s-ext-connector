@@ -4,5 +4,5 @@ RUN microdnf install -y iptables                && \
     microdnf update -y && rm -rf /var/cache/yum && \
 	microdnf clean all
 
-COPY bin/forwarder /
-CMD /forwarder
+COPY bin/gateway /
+CMD /gateway
