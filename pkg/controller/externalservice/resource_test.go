@@ -43,7 +43,7 @@ func TestGenForwardPodSpec(t *testing.T) {
 					Containers: []corev1.Container{
 						{
 							Name:            "forwarder",
-							Image:           "forwarder:0.2",
+							Image:           "docker.io/mkimuram/forwarder:v0.3.0",
 							SecurityContext: &corev1.SecurityContext{Privileged: &isPrivileged},
 							Env: []corev1.EnvVar{
 								{

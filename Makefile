@@ -2,22 +2,37 @@ DIRECTORY := $(PWD)
 CLGENIMAGE := quay.io/slok/kube-code-generator:v1.16.7
 PROJECT_PACKAGE := "github.com/mkimuram/k8s-ext-connector"
 GROUPS_VERSION := "submariner:v1alpha1"
+FORWARDER_IMAGE := forwarder
+FORWARDER_VERSION := v0.3.0
+OPERATOR_IMAGE := k8s-ext-connector
+OPERATOR_VERSION := v0.3.0
+IMAGE_REPO := docker.io/mkimuram
 
-.PHONY: all forwarder forwarder-image gateway operator clean generate-client
+.PHONY: build-all push-all forwarder forwarder-image push-forwarder gateway operator push-operator clean generate-client
 
-all: forwarder-image gateway operator
+build-all: forwarder-image gateway operator
+
+push-all: push-forwarder push-operator
 
 forwarder:
 	cd forwarder && mkdir -p bin && GO111MODULE=on go build -o bin/forwarder .
 
 forwarder-image: forwarder
-	cd forwarder && docker build -t forwarder:0.2 .
+	cd forwarder && docker build -t $(FORWARDER_IMAGE):$(FORWARDER_VERSION) .
+
+push-forwarder:
+	docker tag $(FORWARDER_IMAGE):$(FORWARDER_VERSION) $(IMAGE_REPO)/$(FORWARDER_IMAGE):$(FORWARDER_VERSION)
+	docker push $(IMAGE_REPO)/$(FORWARDER_IMAGE):$(FORWARDER_VERSION)
 
 gateway:
 	cd gateway && mkdir -p bin && GO111MODULE=on go build -o bin/gateway .
 
 operator:
-	operator-sdk build k8s-ext-connector:v0.0.1
+	operator-sdk build $(OPERATOR_IMAGE):$(OPERATOR_VERSION)
+
+push-operator:
+	docker tag $(OPERATOR_IMAGE):$(OPERATOR_VERSION) $(IMAGE_REPO)/$(OPERATOR_IMAGE):$(OPERATOR_VERSION)
+	docker push $(IMAGE_REPO)/$(OPERATOR_IMAGE):$(OPERATOR_VERSION)
 
 clean:
 	rm -f forwarder/bin/forwarder gateway/bin/gateway
@@ -49,4 +64,4 @@ test-e2e:
 
 .PHONY: release
 
-release: clean test-all all
+release: clean test-all build-all push-all

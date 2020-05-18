@@ -16,8 +16,7 @@ spec:
       serviceAccountName: k8s-ext-connector
       containers:
         - name: k8s-ext-connector
-          # Replace this with the built image name
-          image: k8s-ext-connector:v0.0.1
+          image: docker.io/mkimuram/k8s-ext-connector:v0.3.0
           command:
           - k8s-ext-connector
           imagePullPolicy: IfNotPresent

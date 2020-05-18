@@ -58,7 +58,7 @@ func genForwardPodSpec(cr *submarinerv1alpha1.ExternalService) *corev1.Pod {
 			Containers: []corev1.Container{
 				{
 					Name:            "forwarder",
-					Image:           "forwarder:0.2",
+					Image:           "docker.io/mkimuram/forwarder:v0.3.0",
 					SecurityContext: &corev1.SecurityContext{Privileged: &isPrivileged},
 					Env:             env,
 					VolumeMounts:    volumeMounts,
