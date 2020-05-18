@@ -61,13 +61,7 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
         ```
 
 3. On k8s server
-    1. Setup k8s cluster if not exists and create pods and services.
-
-        ```console
-        $ kind create cluster
-        ```
-
-    2. Run pods to test with.
+    1. Create pods and services to test with.
 
         ```console
         $ kubectl create ns ns1
@@ -78,38 +72,26 @@ To try this, you need 3 servers, external server, gateway server, and k8s server
         $ kubectl expose pod my-pod2 --name=my-service2 -n ns2 --port=80
         ```
 
-    3. Clone k8s-ext-connector repo.
+    2. Clone k8s-ext-connector repo.
 
         ```console
         $ git clone https://github.com/mkimuram/k8s-ext-connector.git
         ```
 
-    4. Build operator and forwarder image.
+    3. Deploy operator
 
         ```console
-        $ make all
-        ```
-
-    5. Make images available on k8s cluster (For a cluster created with kind, do below.)
-
-        ```console
-        $ kind load docker-image forwarder:0.1
-        $ kind load docker-image k8s-ext-connector:v0.0.1
-        ```
-
-    6. Deploy operator
-
-        ```console
+        $ cd k8s-ext-connector
         $ ./deploy.sh
         ```
 
-    7. Review manifest for externalService resource, or `deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml`. Replace `targetIP` and `sourceIP` to fit to your environment. (`targetIP` should be external server's IP and `sourceIP` should be external IPs above. See [API](#API) for details.)
+    4. Review manifest for externalService resource, or `deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml`. Replace `targetIP` and `sourceIP` to fit to your environment. (`targetIP` should be external server's IP and `sourceIP` should be external IPs above. See [API](#API) for details.)
 
         ```console
         $ vi deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml
         ```
 
-    8. Create externalService resource
+    5. Create externalService resource
 
         ```console
         $ kubectl create -f deploy/crds/submariner.io_v1alpha1_externalservice_cr.yaml
