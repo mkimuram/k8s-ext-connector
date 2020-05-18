@@ -1,0 +1,19 @@
+apiVersion: submariner.io/v1alpha1
+kind: ExternalService
+metadata:
+  name: my-externalservice
+spec:
+  targetIP: 192.168.122.139
+  sources:
+    - service:
+        namespace: ns1
+        name: my-service1
+      sourceIP: 192.168.122.200
+    - service:
+        namespace: ns2
+        name: my-service2
+      sourceIP: 192.168.122.201
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000

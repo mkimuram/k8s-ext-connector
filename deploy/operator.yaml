@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-ext-connector
+  namespace: external-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: k8s-ext-connector
+  template:
+    metadata:
+      labels:
+        name: k8s-ext-connector
+    spec:
+      serviceAccountName: k8s-ext-connector
+      containers:
+        - name: k8s-ext-connector
+          image: docker.io/mkimuram/k8s-ext-connector:v0.3.0
+          command:
+          - k8s-ext-connector
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: WATCH_NAMESPACE
+              value: ""
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OPERATOR_NAME
+              value: "k8s-ext-connector"

@@ -1,0 +1,7 @@
+apiVersion: submariner.io/v1alpha1
+kind: Gateway
+metadata:
+  name: example-gateway
+spec:
+  # Add fields here
+  size: 3
